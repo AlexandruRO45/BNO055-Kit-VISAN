@@ -1,0 +1,111 @@
+"""Calibration file handling: load, validate, hash.
+
+The on-disk schema is byte-compatible with the bench tooling in the parent
+directory (``imu.py`` / ``imu_cli.py``): the five BNO055 raw-unit keys below.
+``calibrated_at_utc`` / ``source`` / ``sha256`` are additive metadata and are
+optional.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+REQUIRED_KEYS = ("accel_offset", "mag_offset", "gyro_offset", "accel_radius", "mag_radius")
+
+INT16_RANGE = range(-32768, 32768)  # BNO055 offset registers are signed 16-bit
+# The adafruit driver packs radii as signed '<h' — values above 32767 pass
+# the wire format but raise struct.error on write, so validate the driver's
+# real range, not the register's.
+RADIUS_MAX = 32767
+
+
+class CalibrationError(ValueError):
+    """Raised when a calibration file is missing, malformed, or out of range."""
+
+
+def file_sha256(path: str | Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+@dataclass(frozen=True)
+class Calibration:
+    accel_offset: tuple[int, int, int]
+    mag_offset: tuple[int, int, int]
+    gyro_offset: tuple[int, int, int]
+    accel_radius: int
+    mag_radius: int
+    source: str | None = None
+    calibrated_at_utc: str | None = None
+    sha256: str | None = None
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict,
+        source: str | None = None,
+        sha256: str | None = None,
+    ) -> Calibration:
+        missing = [k for k in REQUIRED_KEYS if k not in data]
+        if missing:
+            raise CalibrationError(f"calibration missing keys: {', '.join(missing)}")
+
+        def vec3(key: str) -> tuple[int, int, int]:
+            v = data[key]
+            if not isinstance(v, list) or len(v) != 3 or not all(isinstance(x, int) for x in v):
+                raise CalibrationError(f"calibration {key} must be a list of 3 ints")
+            if not all(x in INT16_RANGE for x in v):
+                raise CalibrationError(f"calibration {key} outside int16 range")
+            return (v[0], v[1], v[2])
+
+        def u16(key: str) -> int:
+            v = data[key]
+            if not isinstance(v, int) or not 0 <= v <= RADIUS_MAX:
+                raise CalibrationError(f"calibration {key} must be an int in [0, {RADIUS_MAX}]")
+            return v
+
+        return cls(
+            accel_offset=vec3("accel_offset"),
+            mag_offset=vec3("mag_offset"),
+            gyro_offset=vec3("gyro_offset"),
+            accel_radius=u16("accel_radius"),
+            mag_radius=u16("mag_radius"),
+            source=data.get("source", source),
+            calibrated_at_utc=data.get("calibrated_at_utc"),
+            sha256=sha256,
+        )
+
+    def to_dict(self) -> dict:
+        out = {
+            "accel_offset": list(self.accel_offset),
+            "mag_offset": list(self.mag_offset),
+            "gyro_offset": list(self.gyro_offset),
+            "accel_radius": self.accel_radius,
+            "mag_radius": self.mag_radius,
+        }
+        if self.source is not None:
+            out["source"] = self.source
+        if self.calibrated_at_utc is not None:
+            out["calibrated_at_utc"] = self.calibrated_at_utc
+        if self.sha256 is not None:
+            out["sha256"] = self.sha256
+        return out
+
+
+def load_calibration(path: str | Path) -> Calibration:
+    path = Path(path)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError as exc:
+        raise CalibrationError(f"calibration file not found: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise CalibrationError(f"calibration file is not valid JSON: {path}") from exc
+    if not isinstance(data, dict):
+        raise CalibrationError(f"calibration file is not a JSON object: {path}")
+    return Calibration.from_dict(data, source=str(path), sha256=file_sha256(path))

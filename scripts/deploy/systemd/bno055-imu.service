@@ -1,0 +1,64 @@
+[Unit]
+# BNO055 I2C IMU boot-time recorder — independent companion to visan.service.
+#
+# Runs headless from boot: loads the shipped calibration from
+# /var/lib/bno055/active.json and records NDOF samples to
+# /var/log/bno055/<session>/imu.jsonl, each sample stamped with a
+# (CLOCK_REALTIME, CLOCK_MONOTONIC) nanosecond pair so offline analysis
+# (scripts/analysis/sync_candump.py) can align this timeline with the VISAN
+# candump capture, compensating for pipeline jitter.
+#
+# Lifecycle (deliberately INDEPENDENT of visan.service — the IMU timeline
+# must cover the whole boot, not only VISAN's lifetime):
+#   WantedBy=multi-user.target   starts at boot on its own, no ordering
+#                                coupling to visan.service
+#
+# Fails closed: a missing/invalid calibration exits EX_CONFIG (78) and
+# systemd keeps the unit failed (RestartPreventExitStatus) — better no data
+# than wrong data.
+Description=BNO055 I2C IMU boot-time recorder
+
+# A dead sensor must not spin the unit forever: after 5 starts in 10 min the
+# unit stays failed and the operator is forced to look at the journal.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=visan
+Group=visan
+
+# systemd-managed dirs (created with correct ownership at unit start):
+#   /var/lib/bno055  calibration state (StateDirectory)
+#   /var/log/bno055  session logs      (LogsDirectory)
+StateDirectory=bno055
+StateDirectoryMode=0755
+LogsDirectory=bno055
+LogsDirectoryMode=0755
+
+# The visan user is created by the VISAN deb; the kit reuses it and needs
+# the i2c group for /dev/i2c-7 (gpio not required — no interrupt line used).
+SupplementaryGroups=i2c
+
+Environment="PATH=/opt/bno055/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/opt/bno055/src"
+Environment="BNO055_KIT_CONFIG=/etc/bno055/bno055_imu.yaml"
+
+ExecStart=/opt/bno055/scripts/deploy/systemd/bno055_imu_wrapper.sh
+
+Restart=on-failure
+RestartSec=5
+# A refused calibration (EX_CONFIG) must fail once and stay failed —
+# restarting cannot fix a missing cal file, and a restart loop would spin
+# the I2C bus. Same pattern as visan.service RestartPreventExitStatus=78.
+RestartPreventExitStatus=78
+TimeoutStopSec=10
+KillSignal=SIGINT
+TimeoutStartSec=60
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bno055-imu
+
+[Install]
+WantedBy=multi-user.target

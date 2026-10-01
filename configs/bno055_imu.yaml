@@ -1,0 +1,17 @@
+# BNO055 kit daemon configuration (installed to /etc/bno055/bno055_imu.yaml
+# by scripts/deploy/install_kit.sh; every key optional — defaults in
+# src/bno055_kit/config.py).
+
+bus: 7            # I2C bus (Orin Nano header pins 3/5)
+address: 0x29     # BNO055 ALT_ADDRESS (0x28 if the DRR line is tied low)
+rate_hz: 100.0    # NDOF fusion ceiling on I2C is ~100 Hz
+
+log_dir: /var/log/bno055
+cal_file: /var/lib/bno055/active.json
+
+slew_threshold_s: 0.05   # realtime-vs-monotonic delta change => clock step
+log_level: INFO
+
+max_reconnects: 10
+reconnect_backoff_s: 1.0
+reconnect_backoff_max_s: 30.0
