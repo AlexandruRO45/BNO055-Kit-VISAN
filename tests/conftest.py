@@ -116,7 +116,7 @@ def candump_capture(tmp_path: Path, imu_session: Path) -> tuple[Path, float]:
             t = start_wall + i * 0.01 + injected_offset
             phase = 2 * np.pi * (i / 1000) * 3
             gyro_mag = float(np.linalg.norm([0.5 * np.sin(phase), 0.2 * np.cos(phase * 0.7), 0.0]))
-            f.write(can_line(t, "vcan0", 0x387, gyro_payload(gyro_mag)))
+            f.write(can_line(t, "can0", 0x387, gyro_payload(gyro_mag)))
             accel_mag = float(np.linalg.norm([0.1 * np.sin(phase), 0.0, 9.81]))
-            f.write(can_line(t, "vcan0", 0x386, accel_payload(accel_mag)))
+            f.write(can_line(t, "can0", 0x386, accel_payload(accel_mag)))
     return capture, injected_offset

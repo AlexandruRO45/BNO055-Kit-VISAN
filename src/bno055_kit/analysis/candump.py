@@ -3,7 +3,7 @@
 ``candump -L <iface>`` (what the VISAN flight recorder spawns) writes one
 frame per line::
 
-    (2026-10-01 11:10:15.123456)  vcan0  384#1122334455667788
+    (2026-10-01 11:10:15.123456)  can0  384#1122334455667788
 
 The timestamp is CLOCK_REALTIME (local time, microsecond resolution) — there
 is no monotonic stamp in a candump log, which is exactly why the IMU session

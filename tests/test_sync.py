@@ -32,7 +32,7 @@ def test_anchor_recovers_zero_offset(imu_session, tmp_path):
     capture = tmp_path / "aligned.candump"
     with open(capture, "w", encoding="utf-8") as f:
         for i in range(500):
-            f.write(can_line(start_wall + i * 0.02, "vcan0", 0x7AA, bytes(8)))
+            f.write(can_line(start_wall + i * 0.02, "can0", 0x7AA, bytes(8)))
     imu = load_imu_session(imu_session)
     can = load_can_series(capture)
     result = align(imu, can, method="anchor")
@@ -46,8 +46,8 @@ def test_auto_falls_back_to_anchor(imu_session, tmp_path):
     """No IMU frames in the capture => correlation impossible => anchor used."""
     capture = tmp_path / "noimu.candump"
     capture.write_text(
-        "(2026-10-01 11:10:15.000000)  vcan0  123#0000000000000000\n"
-        "(2026-10-01 11:10:16.000000)  vcan0  123#0000000000000000\n",
+        "(2026-10-01 11:10:15.000000)  can0  123#0000000000000000\n"
+        "(2026-10-01 11:10:16.000000)  can0  123#0000000000000000\n",
         encoding="utf-8",
     )
     imu = load_imu_session(imu_session)
@@ -61,7 +61,7 @@ def test_correlation_needs_overlap(imu_session, tmp_path):
     """A capture with too few frames must raise, so auto can fall back."""
     capture = tmp_path / "tiny.candump"
     capture.write_text(
-        "(2026-10-01 11:10:15.000000)  vcan0  387#0000000000000000\n",
+        "(2026-10-01 11:10:15.000000)  can0  387#0000000000000000\n",
         encoding="utf-8",
     )
     imu = load_imu_session(imu_session)
