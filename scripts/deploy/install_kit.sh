@@ -110,6 +110,20 @@ else
     run sudo -u visan "$PYTHON_BIN" -m venv "${APP_ROOT}/.venv"
 fi
 run sudo -u visan "${APP_ROOT}/.venv/bin/pip" install -e "${APP_ROOT}"
+# blinka's Jetson backend needs the Jetson.GPIO udev rules so the
+# non-root `visan` user can touch the GPIO sysfs/chip nodes it probes.
+# Best-effort: I2C itself only needs the i2c group (unit
+# SupplementaryGroups), so a missing rule file must not break install.
+GPIO_RULE="${APP_ROOT}/.venv/lib/python3.10/site-packages/Jetson/GPIO/99-gpio.rules"
+if [ -f "$GPIO_RULE" ]; then
+    run groupadd -f -r gpio
+    run install -m 0644 "$GPIO_RULE" /etc/udev/rules.d/99-gpio.rules
+    run udevadm control --reload-rules
+    run udevadm trigger
+    pass "Jetson.GPIO udev rules installed"
+else
+    pass "Jetson.GPIO udev rules not present (skipped)"
+fi
 pass "venv"
 
 # ------------------------------------------------------------- state + config

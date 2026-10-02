@@ -38,7 +38,9 @@ LogsDirectoryMode=0755
 
 # The visan user is created by the VISAN deb; the kit reuses it and needs
 # the i2c group for /dev/i2c-7 (gpio not required — no interrupt line used).
-SupplementaryGroups=i2c
+# The gpio group covers the sysfs/gpiochip nodes blinka's Jetson backend
+# probes when it imports board (99-gpio.rules, installed by install_kit.sh).
+SupplementaryGroups=i2c gpio
 
 Environment="PATH=/opt/bno055/.venv/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="PYTHONPATH=/opt/bno055/src"

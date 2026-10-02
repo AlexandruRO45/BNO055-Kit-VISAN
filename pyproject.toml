@@ -11,6 +11,9 @@ dependencies = [
     "numpy>=1.26,<2",
     "adafruit-circuitpython-bno055",
     "adafruit-blinka",
+    # blinka's Jetson platform backend: without it, `import board` on the
+    # Orin dies with "The platform library 'Jetson' was not found".
+    "Jetson.GPIO; platform_machine == 'aarch64'",
     "smbus2",
     "pyyaml",
 ]
