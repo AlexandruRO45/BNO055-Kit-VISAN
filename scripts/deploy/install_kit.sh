@@ -44,7 +44,9 @@ CAL_SRC="${SRC_DIR}/calibs/active.json"
 CONFIG_SRC="${SRC_DIR}/configs/bno055_imu.yaml"
 
 # Apply runs tee the whole session to a UTC-stamped log (VISAN ops-script
-# convention); dry-runs stay silent so they make no filesystem changes.
+# convention); dry-runs stay silent so they make no filesystem changes.i
+LOG_FILE=""
+
 if [ "$CONFIRM" -eq 1 ]; then
     LOG_FILE="/tmp/install_kit_$(date -u +%Y%m%dT%H%M%SZ).log"
     exec > >(tee -a "$LOG_FILE") 2>&1
