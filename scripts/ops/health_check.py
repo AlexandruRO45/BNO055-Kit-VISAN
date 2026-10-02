@@ -17,7 +17,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from bno055_kit.calibration import CalibrationError, load_calibration  # noqa: E402
+from bno055_kit.calibration import (  # noqa: E402
+    CalibrationError,
+    load_calibration,
+    read_history,
+)
 from bno055_kit.config import Config  # noqa: E402
 
 MIN_FREE_GB = 1.0
@@ -52,6 +56,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cal = load_calibration(cfg.cal_file)
         print(f"[OK]   calibration: {cfg.cal_file} sha256={cal.sha256[:12]}...")
+        if cal.source or cal.calibrated_at_utc:
+            print(f"       source={cal.source or '-'} "
+                  f"calibrated_at_utc={cal.calibrated_at_utc or '-'}")
+        n_hist = len(read_history(Path(cfg.cal_file).parent / "history.jsonl"))
+        if n_hist:
+            print(f"       calibration sessions in history: {n_hist}")
     except CalibrationError as exc:
         print(f"[FAIL] calibration: {exc}")
         rc = 1

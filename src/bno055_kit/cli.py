@@ -1,20 +1,25 @@
 """Operator CLI for the BNO055 kit (scriptable; the daemon runs under systemd).
 
-    bno055-kit scan     — probe the I2C bus for the sensor
-    bno055-kit run      — run the recorder in the foreground (systemd ExecStart)
-    bno055-kit bench    — quantify the active calibration at rest (bias/drift/noise)
-    bno055-kit status   — show active calibration + last session summary
+    bno055-kit scan      — probe the I2C bus for the sensor
+    bno055-kit run       — run the recorder in the foreground (systemd ExecStart)
+    bno055-kit calibrate — interactive on-Kit calibration (stop the unit first;
+                           prefer scripts/ops/start_kit.py calibrate, which
+                           stops/starts recording around it)
+    bno055-kit bench     — quantify the active calibration at rest (bias/drift/noise)
+    bno055-kit status    — show active calibration + last session summary
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import subprocess
 import sys
 import time
 from pathlib import Path
 
-from .calibration import CalibrationError, load_calibration
+from .bench import bench_metrics, make_record, sample_bench_window
+from .calibration import CalibrationError, append_history, load_calibration, save_calibration
 from .config import Config
 from .recorder import MANIFEST_NAME
 from .sensor import Bno055, probe_i2c
@@ -60,56 +65,112 @@ def cmd_run(args: argparse.Namespace) -> int:
     return run_daemon(cfg)
 
 
-# --------------------------------------------------------------------- bench
-def cmd_bench(args: argparse.Namespace) -> int:
-    import numpy as np
-
-    try:
-        cal = load_calibration(args.cal_file)
-    except CalibrationError as exc:
-        print(f"[FAIL] {exc}")
-        return 1
-
-    cfg = Config.load(args.config)
-    bus = args.bus if args.bus is not None else cfg.bus
-    address = args.address if args.address is not None else cfg.address
-    if args.time < 2.0:
-        print("[FAIL] --time too short for a meaningful bench (use >= 2 s)")
-        return 2
-
+# ------------------------------------------------------------------- bench
+def _run_bench(cal_file: str | Path, bus: int, address: int, duration_s: float,
+               *, record_source: str = "bench") -> dict:
+    """Bench one calibration file at rest; return the history record."""
+    cal = load_calibration(cal_file)
     sensor = Bno055(bus=bus, address=address)
     sensor.connect()
     sensor.apply_calibration(cal)
 
-    print(f"[*] bench {args.time:.0f}s — keep the board perfectly still ...")
-    t0 = time.monotonic()
-    heads, accs = [], []
-    while time.monotonic() - t0 < args.time:
-        s = sensor.read()
-        heads.append(s.euler[0])
-        accs.append(s.lin_acc)
-        time.sleep(0.01)
+    print(f"[*] bench {duration_s:.0f}s — keep the board perfectly still ...")
+    heads, accs = sample_bench_window(sensor, duration_s)
+    rec = make_record(str(cal.source), cal.sha256,
+                      bench_metrics(heads, accs, duration_s))
+    rec["source"] = record_source
+    return rec
 
-    heads_arr = np.degrees(np.unwrap(np.radians(np.asarray(heads, dtype=float))))
-    drift_per_min = float((heads_arr[-1] - heads_arr[0]) * 60.0 / args.time)
-    # Skip the first ~0.5 s (mode-switch settle); guard short windows so the
-    # slice can never be empty (mean of [] would be NaN).
-    accs_arr = np.asarray(accs[max(50, len(accs) // 4):], dtype=float)
-    bias = float(np.linalg.norm(accs_arr, axis=1).mean())
-    head_noise = float(np.degrees(np.std(np.radians(heads_arr))))
-    score = round(bias + abs(drift_per_min) + head_noise, 4)
 
-    rec = {
-        "cal_file": str(cal.source),
-        "cal_sha256": cal.sha256,
-        "when_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "bias_linacc_m_s2": round(bias, 4),
-        "drift_deg_per_min": round(drift_per_min, 3),
-        "head_noise_deg": round(head_noise, 4),
-        "score": score,
-    }
+def cmd_bench(args: argparse.Namespace) -> int:
+    try:
+        cfg = Config.load(args.config)
+        bus = args.bus if args.bus is not None else cfg.bus
+        address = args.address if args.address is not None else cfg.address
+        if args.time < 2.0:
+            print("[FAIL] --time too short for a meaningful bench (use >= 2 s)")
+            return 2
+        rec = _run_bench(args.cal_file, bus, address, args.time)
+    except CalibrationError as exc:
+        print(f"[FAIL] {exc}")
+        return 1
+
     print(json.dumps(rec, indent=2))
-    print(f"[score {score} — lower is better]")
+    print(f"[score {rec['score']} — lower is better]")
+    if not args.no_history:
+        hist = Path(args.cal_file).parent / "history.jsonl"
+        append_history(rec, hist)
+        print(f"[OK]   history: {hist}")
+    return 0
+
+
+# ---------------------------------------------------------------- calibrate
+def _unit_active(unit: str) -> bool:
+    try:
+        return subprocess.call(["systemctl", "is-active", "--quiet", unit],
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL) == 0
+    except FileNotFoundError:
+        return False  # no systemd on this host
+
+
+def cmd_calibrate(args: argparse.Namespace) -> int:
+    from .calibrate import CalibrationAborted, CalibrationTimeout, run_calibration
+
+    cfg = Config.load(args.config)
+    bus = args.bus if args.bus is not None else cfg.bus
+    address = args.address if args.address is not None else cfg.address
+
+    if not args.force and _unit_active(args.unit):
+        print(f"[FAIL] {args.unit} is recording — the sensor must be free.")
+        print("       Use: sudo python3 scripts/ops/start_kit.py calibrate"
+              " (stops/starts the unit around it),")
+        print("       or stop it manually / pass --force to calibrate anyway.")
+        return 1
+
+    sensor = Bno055(bus=bus, address=address)
+    sensor.connect()
+    try:
+        cal = run_calibration(sensor)
+    except CalibrationAborted as exc:
+        print(f"\n[ABORT] {exc} — nothing saved.")
+        return 130
+    except CalibrationTimeout as exc:
+        print(f"\n[FAIL] calibration incomplete: {exc} — nothing saved.")
+        return 1
+
+    from dataclasses import replace
+
+    now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    cal = replace(cal, calibrated_at_utc=now_utc)
+
+    cal_dir = Path(cfg.cal_file).parent
+    ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+    cal_path = cal_dir / f"cal_{ts}.json"
+    sha = save_calibration(cal, cal_path)
+    print(f"[OK]   saved {cal_path} sha256={sha[:12]}...")
+
+    if not args.no_activate:
+        sha = save_calibration(cal, cfg.cal_file)
+        print(f"[OK]   active calibration updated: {cfg.cal_file} "
+              f"sha256={sha[:12]}...")
+
+    try:
+        answer = input("    [Enter]=bench 30s (board still) / s=skip >> ")
+    except (EOFError, KeyboardInterrupt):
+        answer = "s"
+    if answer.strip().lower() != "s":
+        rec = _run_bench(cal_path, bus, address, 30.0,
+                         record_source="calibrate")
+        append_history(rec, cal_dir / "history.jsonl")
+        print(json.dumps(rec, indent=2))
+        print(f"[score {rec['score']} — lower is better]")
+    else:
+        append_history(
+            {"cal_file": str(cal_path), "cal_sha256": sha,
+             "when_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+             "source": "calibrate", "score": None},
+            cal_dir / "history.jsonl")
     return 0
 
 
@@ -204,6 +265,19 @@ def _build_parser() -> argparse.ArgumentParser:
     pb = sub.add_parser("bench", help="quantify the active calibration at rest")
     pb.add_argument("--time", type=float, default=30.0, help="seconds at rest")
     pb.add_argument("--cal-file", default=None, help="calibration file to bench")
+    pb.add_argument("--no-history", action="store_true",
+                    help="do not append the record to history.jsonl")
+
+    pc = sub.add_parser("calibrate",
+                        help="interactive on-Kit calibration (stop the unit first)")
+    pc.add_argument("--cal-file", default=None,
+                    help="active calibration file to update (default from config)")
+    pc.add_argument("--no-activate", action="store_true",
+                    help="save cal_<ts>.json only, do not update the active file")
+    pc.add_argument("--unit", default="bno055-imu.service",
+                    help="unit that must NOT be running (default %(default)s)")
+    pc.add_argument("--force", action="store_true",
+                    help="calibrate even if the recorder unit is active")
 
     sub.add_parser("status", help="show active calibration + last session")
     return p
@@ -222,6 +296,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.cal_file is None:
             args.cal_file = Config.load(args.config).cal_file
         return cmd_bench(args)
+    if args.cmd == "calibrate":
+        if args.cal_file is None:
+            args.cal_file = Config.load(args.config).cal_file
+        return cmd_calibrate(args)
     if args.cmd == "status":
         return cmd_status(args)
     raise AssertionError(f"unhandled command {args.cmd!r}")

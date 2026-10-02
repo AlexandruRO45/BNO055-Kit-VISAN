@@ -30,11 +30,13 @@ the winning bench calibration is shipped in `calibs/` and loaded at boot.
 kit/
   src/bno055_kit/            importable package
     clock.py                   paired clock stamps + NTP-step (slew) detection
-    calibration.py             load/validate/hash the shipped calibration
+    calibration.py             load/validate/hash/save calibration + history/best
     sensor.py                  BNO055 wrapper (lazy blinka imports, reopen-safe)
+    calibrate.py               interactive on-Kit calibration procedure
+    bench.py                   shared bench metrics (bias/drift/noise/score)
     recorder.py                session dirs: imu.jsonl + session.json manifest
     daemon.py                  fixed-rate record loop, signals, reconnect policy
-    cli.py                     scan | run | bench | status
+    cli.py                     scan | run | calibrate | bench | status
     analysis/candump.py        candump -L parser + HirrusUAS IMU frame decode
     analysis/sync.py           IMU<->CAN clock alignment (offset + jitter)
   scripts/deploy/
@@ -42,7 +44,7 @@ kit/
     systemd/bno055_imu_wrapper.sh  systemd exec-wrapper
     install_kit.sh                 dry-run-default installer (own venv)
   scripts/ops/
-    start_kit.py                   manual start/stop/status/logs helper
+    start_kit.py                   start/stop/status/logs + calibrate/best
     health_check.py                one-shot Kit health report
   scripts/analysis/
     sync_candump.py                align a session with a candump capture
@@ -83,12 +85,36 @@ sudo systemctl start bno055-imu.service            # or just reboot
 Like the VISAN deb, install **enables** the unit for boot but does not
 start it; the boot path is the tested path.
 
-## Calibrate (bench, interactive)
+## Calibrate
 
-Calibration stays an operator action on the bench, using the parent-dir
-tooling (`python3 imu.py calibrate` → `best`). The winning file is copied
-to `calibs/active.json` here and shipped to the Kit; the daemon only
-*loads* it, never auto-calibrates in flight.
+**Default flow (unchanged):** the shipped `calibs/active.json` is seeded to
+`/var/lib/bno055/active.json` at install (only if absent — an on-Kit result
+is never overwritten) and the daemon *loads* it at every start. The daemon
+never auto-calibrates in flight.
+
+**On-Kit (sensor already glued to the drone)** — the same 3-step bench
+procedure, interactive, English prompts:
+
+```bash
+sudo python3 scripts/ops/start_kit.py calibrate   # stops the unit, guides
+                                                  # the procedure, ALWAYS
+                                                  # restarts recording
+sudo python3 scripts/ops/start_kit.py best        # optional: rank history
+                                                  # + promote the winner
+```
+
+Procedure per session: gyro at rest → six accel faces validated against
+gravity (magnitude, dominant axis, jitter, opposite-sign pair) → accel/mag/
+sys convergence (figure-8 for the magnetometer) → offsets captured to
+`/var/lib/bno055/cal_<UTC ts>.json`, appended to `history.jsonl`, and
+promoted to `active.json` (unless `--no-activate`). An optional 30 s bench
+scores the fresh calibration; run several sessions and `best` promotes the
+lowest score. Ctrl-C at any point aborts without saving — and the recorder
+unit is restarted either way.
+
+The bench tooling in the parent directory (`imu.py calibrate` → `best`)
+produces the identical 5-key schema and remains available on the bench;
+both paths write the same format the daemon loads.
 
 ## Time-sync a session against a candump capture
 
