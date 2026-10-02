@@ -50,6 +50,8 @@ LOG_FILE=""
 if [ "$CONFIRM" -eq 1 ]; then
     LOG_FILE="/tmp/install_kit_$(date -u +%Y%m%dT%H%M%SZ).log"
     exec > >(tee -a "$LOG_FILE") 2>&1
+else
+    LOG_FILE="(none — dry-run)"
 fi
 
 stage() { echo ""; echo "=== [STAGE] $* ==="; }
