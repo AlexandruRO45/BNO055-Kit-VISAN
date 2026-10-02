@@ -87,6 +87,8 @@ case "$PYVER" in
 esac
 id -u visan >/dev/null 2>&1 \
     || fail preflight "user 'visan' not found — install the VISAN deb first"
+command -v rsync >/dev/null 2>&1 \
+    || fail preflight "rsync not found — install it with: sudo apt-get install rsync"
 pass "preflight"
 
 # --------------------------------------------------------------------- install

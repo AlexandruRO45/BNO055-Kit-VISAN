@@ -67,6 +67,13 @@ boot, not only VISAN's lifetime.
 
 ## Install (on the Kit)
 
+The installer requires `rsync`; install it first if it is not already
+available:
+
+```bash
+sudo apt-get install rsync
+```
+
 ```bash
 sudo bash scripts/deploy/install_kit.sh            # dry-run, shows every step
 sudo bash scripts/deploy/install_kit.sh --confirm  # apply
