@@ -62,3 +62,49 @@ def test_session_write_round_trip(tmp_path):
         "t_wall_ns", "t_mono_ns", "qw", "qx", "qy", "qz", "head", "roll", "pitch",
         "lin_acc", "gyro", "cal", "c", "clock_ok",
     }
+
+
+def test_open_session_end_to_end(tmp_path):
+    """Regression: open_session() must pass make_manifest()'s real signature.
+
+    The daemon's whole record path runs through open_session(); a keyword
+    mismatch there fails every boot with
+    ``TypeError: make_manifest() got an unexpected keyword argument``.
+    """
+    from bno055_kit.recorder import MANIFEST_NAME, open_session
+
+    writer = open_session(
+        tmp_path,
+        bus=7,
+        address=0x29,
+        rate_hz=100.0,
+        cal_file="/var/lib/bno055/active.json",
+        cal_sha256="b" * 64,
+        cal_status=(0, 3, 3, 3),
+    )
+    try:
+        writer.write_sample(1790881815_010000000, 5_010_000_000, _sample(), clock_ok=True)
+    finally:
+        writer.finish({"end_reason": "stop_requested", "samples_written": 1})
+
+    manifest = json.loads((writer.session_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert manifest["cal_status_at_start"] == [0, 3, 3, 3]
+    assert manifest["i2c_bus"] == 7
+    assert manifest["i2c_address"] == 0x29
+    assert manifest["cal_sha256"] == "b" * 64
+    assert manifest["spawn_jitter_s"] >= 0.0
+    assert writer.session_dir.parent == tmp_path
+
+
+def test_open_session_same_second_collision(tmp_path):
+    """Two sessions in the same second must not clobber each other's files."""
+    from bno055_kit.recorder import open_session
+
+    kwargs = dict(bus=7, address=0x29, rate_hz=100.0,
+                  cal_file="active.json", cal_sha256=None, cal_status=(3, 3, 3, 3))
+    first = open_session(tmp_path, **kwargs)
+    first.finish({"end_reason": "stop_requested"})
+    second = open_session(tmp_path, **kwargs)
+    second.finish({"end_reason": "stop_requested"})
+    assert first.session_dir != second.session_dir
+    assert first.session_dir.is_dir() and second.session_dir.is_dir()

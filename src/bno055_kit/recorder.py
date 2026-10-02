@@ -177,7 +177,7 @@ def open_session(
             rate_hz=rate_hz,
             cal_file=cal_file,
             cal_sha256=cal_sha256,
-            cal_status_at_start=cal_status,
+            cal_status=cal_status,
         )
     )
     return writer
