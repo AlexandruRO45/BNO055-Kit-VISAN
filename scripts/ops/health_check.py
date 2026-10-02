@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from bno055_kit.calibration import (  # noqa: E402
     CalibrationError,
+    fallback_path,
     load_calibration,
     read_history,
 )
@@ -53,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = Config.load(args.config if Path(args.config).is_file() else None)
 
+    cal = None
     try:
         cal = load_calibration(cfg.cal_file)
         print(f"[OK]   calibration: {cfg.cal_file} sha256={cal.sha256[:12]}...")
@@ -64,6 +66,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"       calibration sessions in history: {n_hist}")
     except CalibrationError as exc:
         print(f"[FAIL] calibration: {exc}")
+        rc = 1
+
+    # The frozen factory fallback is the retreat path when no on-Kit session
+    # is good enough — a missing/invalid one means `start_kit.py fallback`
+    # would fail exactly when it is needed most.
+    fb = fallback_path(cfg.cal_file)
+    try:
+        fb_cal = load_calibration(fb)
+        print(f"[OK]   factory fallback: {fb} sha256={fb_cal.sha256[:12]}...")
+        if cal is not None and fb_cal.sha256 == cal.sha256:
+            print("       (active == factory fallback: never calibrated on-Kit)")
+    except CalibrationError as exc:
+        print(f"[FAIL] factory fallback: {exc} — re-run the installer")
         rc = 1
 
     log_dir = Path(cfg.log_dir)

@@ -15,6 +15,17 @@ from pathlib import Path
 
 REQUIRED_KEYS = ("accel_offset", "mag_offset", "gyro_offset", "accel_radius", "mag_radius")
 
+# The permanent known-good calibration shipped with the Kit. Unlike the
+# active calibration it is frozen (root-owned, mode 0444 on the Kit) and is
+# never written by the calibration flow — it is what the fallback mechanism
+# restores the active calibration from.
+FALLBACK_NAME = "factory_fallback.json"
+
+
+def fallback_path(cal_file: str | Path) -> Path:
+    """Location of the factory fallback next to an active calibration file."""
+    return Path(cal_file).parent / FALLBACK_NAME
+
 INT16_RANGE = range(-32768, 32768)  # BNO055 offset registers are signed 16-bit
 # The adafruit driver packs radii as signed '<h' — values above 32767 pass
 # the wire format but raise struct.error on write, so validate the driver's

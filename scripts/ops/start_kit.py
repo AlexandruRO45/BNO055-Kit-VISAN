@@ -7,12 +7,16 @@ Usage:
     start_kit.py status|start|stop|restart|logs [--unit bno055-imu.service]
     start_kit.py calibrate [--unit ...] [extra cli calibrate args...]
     start_kit.py best [--unit ...]
+    start_kit.py fallback [--unit ...]
 
 ``calibrate`` is the on-Kit operator toggle: it stops the recorder, runs the
 interactive calibration (sensor already glued to the drone), and ALWAYS
 restarts the unit afterwards — including on Ctrl-C or failure — so the
 drone never sits unrecorded. ``best`` promotes the lowest-score session
 from history.jsonl to the active calibration and restarts the unit.
+``fallback`` restores the factory calibration (the known-good calib shipped
+with the Kit, never deleted) as the active calibration and restarts the
+unit — the escape hatch when no on-Kit session is good enough.
 
 Exit codes: 0 ok, 1 command failed, 2 bad arguments.
 """
@@ -27,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from bno055_kit.calibration import (  # noqa: E402
     CalibrationError,
+    fallback_path,
     load_calibration,
     pick_best,
     read_history,
@@ -124,9 +129,35 @@ def cmd_best(unit: str, config: str) -> int:
     return 0
 
 
+def cmd_fallback(unit: str, config: str) -> int:
+    """Restore the factory calibration as the active one and restart."""
+    from bno055_kit.config import Config
+
+    cfg = Config.load(config if Path(config).is_file() else None)
+    fallback = fallback_path(cfg.cal_file)
+    if not fallback.is_file():
+        print(f"[FAIL] factory fallback calibration missing: {fallback}")
+        print("       re-run the installer: sudo bash "
+              "scripts/deploy/install_kit.sh --confirm")
+        return 1
+    try:
+        cal = load_calibration(fallback)
+    except CalibrationError as exc:
+        print(f"[FAIL] factory fallback unreadable: {exc}")
+        return 1
+    sha = save_calibration(cal, cfg.cal_file)
+    print(f"[OK]   active calibration <- factory fallback {fallback} "
+          f"sha256={sha[:12]}...")
+    _systemd("stop", unit)
+    _systemd("start", unit)
+    print(f"[OK]   {unit} restarted with the factory calibration.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="start_kit", description=__doc__.splitlines()[0])
-    p.add_argument("action", choices=sorted([*ACTIONS, "calibrate", "best"]))
+    p.add_argument("action",
+                   choices=sorted([*ACTIONS, "calibrate", "best", "fallback"]))
     p.add_argument("--unit", default=DEFAULT_UNIT)
     p.add_argument("--config", default=DEFAULT_CONFIG)
     args, extra = p.parse_known_args(argv)
@@ -135,6 +166,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_calibrate(args.unit, args.config, extra)
     if args.action == "best":
         return cmd_best(args.unit, args.config)
+    if args.action == "fallback":
+        return cmd_fallback(args.unit, args.config)
 
     if extra:
         p.error(f"unrecognized arguments: {' '.join(extra)}")

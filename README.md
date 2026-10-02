@@ -10,7 +10,10 @@ pipeline jitter — so the two logs can be correlated post-flight.
 This bundle is the productionised successor of the bench tooling in the
 parent directory (`imu.py` / `imu_cli.py`), which stays untouched as the
 interactive calibration tool. The calibration schema is byte-compatible:
-the winning bench calibration is shipped in `calibs/` and loaded at boot.
+the winning bench calibration ships twice — as `calibs/active.json` (the
+mutable active seed) and as `calibs/factory_fallback.json` (the frozen
+known-good fallback) — so a fresh Kit boots recording with the known-good
+cal and can always retreat to it.
 
 ## Design doctrine (inherited from VISAN)
 
@@ -44,12 +47,14 @@ kit/
     systemd/bno055_imu_wrapper.sh  systemd exec-wrapper
     install_kit.sh                 dry-run-default installer (own venv)
   scripts/ops/
-    start_kit.py                   start/stop/status/logs + calibrate/best
+    start_kit.py                   start/stop/status/logs + calibrate/best/fallback
     health_check.py                one-shot Kit health report
   scripts/analysis/
     sync_candump.py                align a session with a candump capture
   configs/bno055_imu.yaml          daemon config (installed to /etc/bno055)
-  calibs/                          shipped calibration + bench history
+  calibs/                          active seed + frozen factory fallback
+                                   (cal_<ts>.json sessions + history.jsonl are
+                                   generated per instance, never tracked)
   tests/                           hardware-free unit tests (pytest)
 ```
 
@@ -58,7 +63,8 @@ kit/
 | Path | Purpose |
 |---|---|
 | `/opt/bno055` | app root, own venv at `/opt/bno055/.venv` (VISAN venv carries no I2C deps) |
-| `/var/lib/bno055/active.json` | active calibration (`StateDirectory`) |
+| `/var/lib/bno055/active.json` | **active** calibration — mutable working copy the daemon loads; `calibrate`/`best`/`fallback` overwrite it at will (`StateDirectory`) |
+| `/var/lib/bno055/factory_fallback.json` | **factory fallback** — frozen known-good cal, root-owned mode `0444`, re-installed on every install, never written or deleted by any tool |
 | `/var/log/bno055/<session>/` | `imu.jsonl` samples + `session.json` manifest (`LogsDirectory`) |
 | `/etc/bno055/bno055_imu.yaml` | daemon config |
 | `/run/bno055` | runtime dir (`RuntimeDirectory`) |
@@ -87,10 +93,17 @@ start it; the boot path is the tested path.
 
 ## Calibrate
 
-**Default flow (unchanged):** the shipped `calibs/active.json` is seeded to
-`/var/lib/bno055/active.json` at install (only if absent — an on-Kit result
-is never overwritten) and the daemon *loads* it at every start. The daemon
-never auto-calibrates in flight.
+**Two files, two roles.** `active.json` is the mutable working copy the
+daemon loads — `calibrate`, `best` and `fallback` overwrite it freely.
+`factory_fallback.json` is the frozen known-good calibration: root-owned,
+mode `0444`, re-installed on **every** install, and never written or
+deleted by any tool — so it survives any number of bad on-Kit sessions and
+is always available as the retreat path.
+
+**Default flow (unchanged):** at first install `active.json` is seeded from
+the shipped seed (only if absent — an on-Kit result is never overwritten)
+and the daemon *loads* it at every start. The daemon never auto-calibrates
+in flight.
 
 **On-Kit (sensor already glued to the drone)** — the same 3-step bench
 procedure, interactive, English prompts:
@@ -101,13 +114,17 @@ sudo python3 scripts/ops/start_kit.py calibrate   # stops the unit, guides
                                                   # restarts recording
 sudo python3 scripts/ops/start_kit.py best        # optional: rank history
                                                   # + promote the winner
+sudo python3 scripts/ops/start_kit.py fallback    # none of the sessions
+                                                  # good enough? restore
+                                                  # the factory cal
 ```
 
 Procedure per session: gyro at rest → six accel faces validated against
 gravity (magnitude, dominant axis, jitter, opposite-sign pair) → accel/mag/
 sys convergence (figure-8 for the magnetometer) → offsets captured to
-`/var/lib/bno055/cal_<UTC ts>.json`, appended to `history.jsonl`, and
-promoted to `active.json` (unless `--no-activate`). An optional 30 s bench
+`/var/lib/bno055/cal_<UTC ts>.json`, appended to the Kit-local
+`/var/lib/bno055/history.jsonl`, and promoted to `active.json` (unless
+`--no-activate`). An optional 30 s bench
 scores the fresh calibration; run several sessions and `best` promotes the
 lowest score. Ctrl-C at any point aborts without saving — and the recorder
 unit is restarted either way.

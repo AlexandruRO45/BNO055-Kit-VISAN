@@ -19,7 +19,13 @@ import time
 from pathlib import Path
 
 from .bench import bench_metrics, make_record, sample_bench_window
-from .calibration import CalibrationError, append_history, load_calibration, save_calibration
+from .calibration import (
+    CalibrationError,
+    append_history,
+    fallback_path,
+    load_calibration,
+    save_calibration,
+)
 from .config import Config
 from .recorder import MANIFEST_NAME
 from .sensor import Bno055, probe_i2c
@@ -120,6 +126,12 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     cfg = Config.load(args.config)
     bus = args.bus if args.bus is not None else cfg.bus
     address = args.address if args.address is not None else cfg.address
+
+    if Path(cfg.cal_file).name == fallback_path(cfg.cal_file).name:
+        print(f"[FAIL] refusing to overwrite the frozen factory fallback "
+              f"({cfg.cal_file}) — point --cal-file at the active "
+              f"calibration (e.g. /var/lib/bno055/active.json).")
+        return 2
 
     if not args.force and _unit_active(args.unit):
         print(f"[FAIL] {args.unit} is recording — the sensor must be free.")
