@@ -17,5 +17,5 @@ if [ ! -x "${PYTHON}" ]; then
     exit 78
 fi
 
-exec "${PYTHON}" -u -m bno055_kit.cli run --config "${CONFIG}" \
+exec "${PYTHON}" -u -m bno055_kit.cli --config "${CONFIG}" run \
     --log-dir "${BNO055_KIT_LOG_DIR:-/var/log/bno055}"

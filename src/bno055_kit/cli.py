@@ -148,7 +148,43 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------- main
-def main(argv: list[str] | None = None) -> int:
+def _parse_args(p: argparse.ArgumentParser,
+                argv: list[str] | None) -> argparse.Namespace:
+    """Parse argv, accepting global flags before *or* after the subcommand.
+
+    argparse only knows --bus/--address/--config/--log-level on the root
+    parser, so `bno055-kit run --config X` would die with
+    "unrecognized arguments". Operate (and the systemd wrapper) naturally
+    put the flags after the verb, so retry with globals hoisted in front
+    of the subcommand rather than depending on one invocation order.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    first_err: SystemExit | None = None
+    try:
+        return p.parse_args(argv)
+    except SystemExit as err:  # noqa: PERF203 - retry path below
+        first_err = err
+
+    globals_: list[str] = []
+    rest: list[str] = []
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok in ("--bus", "--address", "--config", "--log-level"):
+            globals_.extend((tok, argv[i + 1]))
+            i += 2
+        elif tok.startswith(("--bus=", "--address=", "--config=", "--log-level=")):
+            globals_.append(tok)
+            i += 1
+        else:
+            rest.append(tok)
+            i += 1
+    if not globals_:
+        raise first_err  # not a global-flag problem: report the original error
+    return p.parse_args(globals_ + rest)
+
+
+def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bno055-kit",
                                 description="BNO055 kit recorder (VISAN companion)")
     p.add_argument("--bus", type=int, default=None, help="I2C bus (default from config)")
@@ -170,8 +206,12 @@ def main(argv: list[str] | None = None) -> int:
     pb.add_argument("--cal-file", default=None, help="calibration file to bench")
 
     sub.add_parser("status", help="show active calibration + last session")
+    return p
 
-    args = p.parse_args(argv)
+
+def main(argv: list[str] | None = None) -> int:
+    p = _build_parser()
+    args = _parse_args(p, argv)
     _setup_logging(args.log_level)
 
     if args.cmd == "scan":

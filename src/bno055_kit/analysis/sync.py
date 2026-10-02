@@ -34,6 +34,11 @@ from .candump import CandumpFrame, decode_imu_frame, parse_candump
 IMU_GYRO_IDS = (0x387,)
 IMU_ACCEL_IDS = (0x386,)
 
+# A channel whose detrended magnitude series has no real correlation
+# structure (peak below this) carries no timing information — typically
+# |accel| pinned near 1 g and quantized by the CAN payload.
+_MIN_PEAK_CORR = 0.3
+
 
 @dataclass
 class ImuSeries:
@@ -288,10 +293,13 @@ def align_correlation(
         a = _detrend(_resample(imu_t, imu_series, grid))
         b = _detrend(_resample(can_t, can_series, grid))
         lag, peak = _xcorr_offset(a, b, fs, max_lag_s)
-        if not np.isfinite(peak):
-            # Degenerate channel (e.g. a near-constant magnitude series has no
-            # correlation structure) — it carries no timing information.
-            notes.append(f"{label}: skipped (no correlation structure)")
+        if not np.isfinite(peak) or peak < _MIN_PEAK_CORR:
+            # Degenerate channel (e.g. |accel| dominated by gravity and
+            # quantized to one CAN LSB is flat after detrending: any "peak"
+            # is float noise) — it carries no timing information and must
+            # not dilute the channels that do.
+            notes.append(f"{label}: skipped (no correlation structure"
+                         f", peak {peak:.3f})")
             continue
         offset = -lag  # convert to the shared can_wall - imu_wall convention
         offsets.append(offset)
