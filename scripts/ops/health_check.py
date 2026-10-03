@@ -10,10 +10,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# Re-exec under the app venv when launched with any other interpreter —
+# `sudo python3 ...` uses the system python, which lacks pyyaml.
+_APP_VENV = Path("/opt/bno055/.venv")
+if (_APP_VENV / "bin/python").is_file() \
+        and Path(sys.prefix).resolve() != _APP_VENV.resolve():
+    os.execv(str(_APP_VENV / "bin/python"),
+             [str(_APP_VENV / "bin/python"), *sys.argv])
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 

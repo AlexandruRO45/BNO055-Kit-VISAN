@@ -119,6 +119,10 @@ sudo python3 scripts/ops/start_kit.py fallback    # none of the sessions
                                                   # the factory cal
 ```
 
+The ops scripts re-exec themselves under `/opt/bno055/.venv/bin/python`
+automatically, so plain `sudo python3 ...` works on the Kit (sudo resets
+PATH to the system python, which lacks the kit's deps).
+
 Procedure per session: gyro at rest → six accel faces validated against
 gravity (magnitude, dominant axis, jitter, opposite-sign pair) → accel/mag/
 sys convergence (figure-8 for the magnetometer) → offsets captured to
