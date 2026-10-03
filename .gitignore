@@ -8,3 +8,9 @@ build/
 dist/
 logs/
 *.log
+
+# Calibration sessions are per-instance artifacts generated on the Kit (or on
+# the bench) next to the active calibration — only the shipped seed and the
+# frozen factory fallback are tracked.
+calibs/history.jsonl
+calibs/cal_*.json

@@ -1,11 +1,21 @@
-"""Tests for calibration loading/validation."""
+"""Tests for calibration loading/validation/persistence."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
-from bno055_kit.calibration import Calibration, CalibrationError, file_sha256, load_calibration
+from bno055_kit.calibration import (
+    Calibration,
+    CalibrationError,
+    append_history,
+    file_sha256,
+    load_calibration,
+    pick_best,
+    read_history,
+    save_calibration,
+)
 
 
 def test_round_trip(cal_dict):
@@ -54,10 +64,110 @@ def test_load_bad_json(tmp_path):
 
 
 def test_shipped_calibrations_validate():
-    """The calibs shipped in the kit bundle must load cleanly."""
-    from pathlib import Path
-
+    """The calibs shipped in the kit bundle must load cleanly: the mutable
+    active seed AND the permanent factory fallback (which the fallback
+    mechanism restores into active.json — it must always validate)."""
     kit_calibs = Path(__file__).resolve().parents[1] / "calibs"
-    for name in ("active.json", "cal_20261001_114721.json"):
+    for name in ("active.json", "factory_fallback.json"):
         cal = load_calibration(kit_calibs / name)
         assert cal.accel_radius > 0 and cal.mag_radius > 0
+
+
+def test_history_not_tracked_in_repo():
+    """History is a per-instance artifact generated next to the active cal
+    (on the Kit / on the bench) — the repo ships none."""
+    repo_calibs = Path(__file__).resolve().parents[1] / "calibs"
+    assert not (repo_calibs / "history.jsonl").exists()
+
+
+# ------------------------------------------------------------------ save
+def test_save_round_trip(tmp_path, cal_dict):
+    cal_dict["calibrated_at_utc"] = "2026-10-02T00:00:00Z"
+    cal = Calibration.from_dict(cal_dict, source="unit-test")
+    path = tmp_path / "sub" / "cal_x.json"
+    sha = save_calibration(cal, path)
+    assert sha == file_sha256(path)
+    back = load_calibration(path)
+    assert back.accel_offset == cal.accel_offset
+    assert back.mag_offset == cal.mag_offset
+    assert back.gyro_offset == cal.gyro_offset
+    assert back.accel_radius == cal.accel_radius
+    assert back.mag_radius == cal.mag_radius
+    assert back.calibrated_at_utc == "2026-10-02T00:00:00Z"
+
+
+def test_save_never_embeds_own_sha256(tmp_path, cal_dict):
+    cal = Calibration.from_dict(cal_dict, source="s", sha256="deadbeef")
+    path = tmp_path / "cal.json"
+    save_calibration(cal, path)
+    assert "sha256" not in json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_save_rejects_invalid_before_write(tmp_path):
+    """A Calibration can only exist validated (from_dict gates it), so the
+    write path is safe by construction — prove the gate itself holds."""
+    with pytest.raises(CalibrationError):
+        Calibration.from_dict({"accel_offset": [1, 2, 3]})
+
+
+def test_save_leaves_no_tmp_file(tmp_path, cal_dict):
+    cal = Calibration.from_dict(cal_dict)
+    path = tmp_path / "cal.json"
+    save_calibration(cal, path)
+    assert not (tmp_path / "cal.json.tmp").exists()
+
+
+# ---------------------------------------------------------------- history
+def test_history_append_read(tmp_path):
+    hist = tmp_path / "history.jsonl"
+    assert read_history(hist) == []  # missing file tolerated
+    append_history({"cal_file": "a.json", "score": 1.0}, hist)
+    append_history({"cal_file": "b.json", "score": 2.0}, hist)
+    recs = read_history(hist)
+    assert [r["score"] for r in recs] == [1.0, 2.0]
+
+
+def test_pick_best(tmp_path):
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text("{}")
+    b.write_text("{}")
+    recs = [
+        {"cal_file": str(a), "score": 5.0},
+        {"cal_file": str(b), "score": 2.0},
+        {"cal_file": str(tmp_path / "gone.json"), "score": 0.1},  # dropped
+        {"cal_file": str(a), "score": None},                        # skipped
+    ]
+    best = pick_best(recs)
+    assert best["cal_file"] == str(b)
+
+
+def test_pick_best_empty():
+    assert pick_best([]) is None
+    assert pick_best([{"cal_file": "nope.json", "score": 1.0}]) is None
+
+
+# ---------------------------------------------------------------- fallback
+def test_fallback_path_sits_next_to_active():
+    from bno055_kit.calibration import FALLBACK_NAME, fallback_path
+
+    assert fallback_path("/var/lib/bno055/active.json") == \
+        Path("/var/lib/bno055") / FALLBACK_NAME
+    assert FALLBACK_NAME == "factory_fallback.json"
+
+
+def test_fallback_copy_restores_active(tmp_path, cal_dict):
+    """The fallback mechanism: frozen fallback -> overwrite active.json."""
+    from bno055_kit.calibration import fallback_path
+
+    fb = fallback_path(tmp_path / "active.json")
+    cal_dict["source"] = "factory"
+    sha_fb = save_calibration(Calibration.from_dict(cal_dict), fb)
+    # active drifts away (bad on-Kit sessions) ...
+    drifted = dict(cal_dict, accel_offset=[1, 2, 3], source="on-kit")
+    save_calibration(Calibration.from_dict(drifted), tmp_path / "active.json")
+    assert load_calibration(tmp_path / "active.json").accel_offset == (1, 2, 3)
+    # ... then fallback restores the frozen values into active.
+    save_calibration(load_calibration(fb), tmp_path / "active.json")
+    active = load_calibration(tmp_path / "active.json")
+    assert list(active.accel_offset) == cal_dict["accel_offset"]
+    assert active.sha256 == sha_fb
