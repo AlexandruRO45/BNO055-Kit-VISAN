@@ -67,6 +67,12 @@ ACTIONS = {
 DEFAULT_UNIT = "bno055-imu.service"
 DEFAULT_CONFIG = "/etc/bno055/bno055_imu.yaml"
 
+# Actions that stop/start the recorder unit: without root, polkit refuses
+# the systemctl call mid-run ("Access denied"), which would leave `best`
+# half-done (history ranked, factory never benched). Fail fast instead.
+_PRIVILEGED_ACTIONS = {"calibrate", "best", "fallback", "start", "stop",
+                       "restart"}
+
 
 def _systemd(*args: str) -> int:
     cmd = ["systemctl", *args]
@@ -248,6 +254,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="bench seconds per candidate for `best` "
                         "(default %(default)s)")
     args, extra = p.parse_known_args(argv)
+
+    if args.action in _PRIVILEGED_ACTIONS and os.geteuid() != 0:
+        print(f"[FAIL] '{args.action}' controls {args.unit} and needs root: "
+              f"run\n       sudo python3 {' '.join(sys.argv[:1])} "
+              f"{' '.join(sys.argv[1:])}")
+        return 2
 
     if args.action == "calibrate":
         return cmd_calibrate(args.unit, args.config, extra)

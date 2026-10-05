@@ -125,7 +125,8 @@ def _face_line(sensor, axis: int, ref_sign: int | None, *,
     mean, std_max = sample_face(sensor, hold_s=window_s, dt=dt, sleep=sleep)
     res = validate_face(mean, std_max, axis, ref_sign=ref_sign)
     if res.ok:
-        return f"READY: pose correct ({'XYZ'[axis]}{res.sign:+d}) — [Enter]"
+        sign = "+" if res.sign > 0 else "-"
+        return f"READY: pose correct ({'XYZ'[axis]}{sign}) — [Enter]"
     return f"adjust: {res.reason}"
 
 
