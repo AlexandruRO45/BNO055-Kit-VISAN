@@ -7,13 +7,13 @@ nanosecond stamp**, and ships with an offline analysis script that aligns
 its timeline against a VISAN `candump -L` capture — compensating for
 pipeline jitter — so the two logs can be correlated post-flight.
 
-This bundle is the productionised successor of the bench tooling in the
-parent directory (`imu.py` / `imu_cli.py`), which stays untouched as the
-interactive calibration tool. The calibration schema is byte-compatible:
-the winning bench calibration ships twice — as `calibs/active.json` (the
-mutable active seed) and as `calibs/factory_fallback.json` (the frozen
-known-good fallback) — so a fresh Kit boots recording with the known-good
-cal and can always retreat to it.
+The calibration schema is the original 5-key BNO055 raw-unit format (the
+same one the earlier bench tooling produced, now folded into this package
+as `calibrate`/`bench`/`best`). The known-good calibration ships twice — as
+`calibs/active.json` (the mutable active seed) and as
+`calibs/factory_fallback.json` (the frozen known-good fallback) — so a
+fresh Kit boots recording with the known-good cal and can always retreat to
+it.
 
 ## Design doctrine (inherited from VISAN)
 
@@ -143,16 +143,23 @@ A face skipped after 3 attempts also says *why*: a wrong pose blames the
 position ("reposition and run again — the sensor itself is fine"), never
 the calibration; only a correct pose with bad magnitude blames the sensor.
 
-`best` is the only promoter: it ranks every scored session in
-`history.jsonl`, then benches the **factory fallback live** under the same
-conditions (same sensor, same bench, same day — `--time` sets the window,
-30 s default). The winner is promoted to `active.json` **only if its score
-strictly beats the factory score**; otherwise the factory cal stays active
-and nothing is written. A tie keeps the frozen known-good cal.
+`best` is the only promoter. It first ranks the scored sessions in
+`history.jsonl` to pick a *candidate*, then decides by **benching the top
+session and the factory fallback live, back-to-back, under identical
+conditions** (same settle, same minute — `--time` sets the window, 30 s
+default). The session is promoted to `active.json` **only if its live score
+strictly beats the factory's live score**; otherwise the factory cal stays
+active and nothing is written (a tie keeps the frozen known-good cal). Both
+candidates are re-benched every run — a stored score only picks the
+candidate, it never wins the comparison — so the two numbers are always
+apples-to-apples. If either bench window is untrustworthy (the fusion has
+not re-converged to 3/3/3/3 after the offsets are written), `best` refuses
+to promote rather than score a frozen heading as a fake-perfect ~0.
 
-The bench tooling in the parent directory (`imu.py calibrate` → `best`)
-produces the identical 5-key schema and remains available on the bench;
-both paths write the same format the daemon loads.
+`bench` scores any calibration file at rest (`bias + |drift| + noise`,
+lower is better) and appends to the same `history.jsonl`; it is the shared
+scoring that `calibrate` and `best` both run through, so every score in the
+history is directly comparable.
 
 ## Time-sync a session against a candump capture
 

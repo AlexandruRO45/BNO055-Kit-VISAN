@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -75,9 +76,19 @@ def test_shipped_calibrations_validate():
 
 def test_history_not_tracked_in_repo():
     """History is a per-instance artifact generated next to the active cal
-    (on the Kit / on the bench) — the repo ships none."""
-    repo_calibs = Path(__file__).resolve().parents[1] / "calibs"
-    assert not (repo_calibs / "history.jsonl").exists()
+    (on the Kit / on the bench) — the repo *ships* none.
+
+    Checks git-tracking, not filesystem existence: a developer may keep a
+    gitignored local reference copy under calibs/ (the legacy bench writes
+    one there), which must not fail the suite.
+    """
+    repo = Path(__file__).resolve().parents[1]
+    tracked = subprocess.run(["git", "-C", str(repo), "ls-files",
+                              "calibs/history.jsonl"],
+                             capture_output=True, text=True)
+    if tracked.returncode != 0:
+        pytest.skip("not a git checkout — nothing to be tracked")
+    assert tracked.stdout.strip() == ""
 
 
 # ------------------------------------------------------------------ save

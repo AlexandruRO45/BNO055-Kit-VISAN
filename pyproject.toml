@@ -39,15 +39,6 @@ src = ["src", "tests", "scripts"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
 
-[tool.ruff.lint.per-file-ignores]
-# Legacy bench tooling restored as reference; deleted once the on-Kit
-# calibration flow is field-verified.
-"imu.py" = ["E", "I", "UP", "B"]
-"imu_cli.py" = ["E", "I", "UP", "B"]
-"run_raw.py" = ["E", "I", "UP", "B"]
-"archive_old_files/**" = ["E", "I", "UP", "B"]
-"calibrari/**" = ["E", "I", "UP", "B"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

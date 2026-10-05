@@ -72,13 +72,23 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 # ------------------------------------------------------------------- bench
+class BenchNotConverged(RuntimeError):
+    """Raised when a bench window was sampled before the fusion converged."""
+
+
 def _run_bench(cal_file: str | Path, bus: int, address: int, duration_s: float,
-               *, record_source: str = "bench") -> dict:
+               *, record_source: str = "bench",
+               settle_s: float = 5.0) -> dict:
     """Bench one calibration file at rest; return the history record.
 
     The record's ``cal_file`` is the *path that was benched* — never the
     calibration's internal ``source`` label — so ``best`` can re-read and
     promote exactly the file that was scored.
+
+    The sensor is given ``settle_s`` to re-converge after the offsets are
+    written, and the window is rejected (rather than scored) if the levels
+    never reach 3: a freshly-applied calibration reports a *frozen* heading,
+    which would score near 0 and poison the ``best`` comparison.
     """
     cal_file = Path(cal_file)
     cal = load_calibration(cal_file)
@@ -86,11 +96,23 @@ def _run_bench(cal_file: str | Path, bus: int, address: int, duration_s: float,
     sensor.connect()
     sensor.apply_calibration(cal)
 
+    if settle_s > 0:
+        print(f"[*] settling {settle_s:.0f}s before benching ...")
+        deadline = time.monotonic() + settle_s
+        while time.monotonic() < deadline:
+            time.sleep(0.25)
+
     print(f"[*] bench {duration_s:.0f}s — keep the board perfectly still ...")
-    heads, accs = sample_bench_window(sensor, duration_s)
+    heads, accs, levels = sample_bench_window(sensor, duration_s)
     rec = make_record(str(cal_file), cal.sha256,
-                      bench_metrics(heads, accs, duration_s))
+                      bench_metrics(heads, accs, duration_s, levels=levels))
     rec["source"] = record_source
+    settled = rec.get("cal_levels_at_bench")
+    if settled is not None and min(settled) < 3:
+        raise BenchNotConverged(
+            f"bench window invalid: calibration levels {tuple(settled)} "
+            f"(need 3/3/3/3) — the fusion had not re-converged, so the "
+            f"heading was not trustworthy. Re-run with a longer --time.")
     return rec
 
 
@@ -104,6 +126,9 @@ def cmd_bench(args: argparse.Namespace) -> int:
             return 2
         rec = _run_bench(args.cal_file, bus, address, args.time)
     except CalibrationError as exc:
+        print(f"[FAIL] {exc}")
+        return 1
+    except BenchNotConverged as exc:
         print(f"[FAIL] {exc}")
         return 1
 
@@ -177,11 +202,26 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     except (EOFError, KeyboardInterrupt):
         answer = "s"
     if answer.strip().lower() != "s":
-        rec = _run_bench(cal_path, bus, address, 30.0,
-                         record_source="calibrate")
-        append_history(rec, cal_dir / "history.jsonl")
-        print(json.dumps(rec, indent=2))
-        print(f"[score {rec['score']} — lower is better]")
+        try:
+            rec = _run_bench(cal_path, bus, address, 30.0,
+                             record_source="calibrate")
+        except BenchNotConverged as exc:
+            # The session is still valid and saved — only its *score* is
+            # untrustworthy right now, so it stays unscored in history and
+            # `best` can bench it later, once the fusion has settled.
+            print(f"[!]     post-calibration bench invalid: {exc}")
+            print("        session kept UNSCORED — `best` will bench it "
+                  "later, once the fusion has settled.")
+            append_history(
+                {"cal_file": str(cal_path), "cal_sha256": sha,
+                 "when_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                           time.gmtime()),
+                 "source": "calibrate", "score": None},
+                cal_dir / "history.jsonl")
+        else:
+            append_history(rec, cal_dir / "history.jsonl")
+            print(json.dumps(rec, indent=2))
+            print(f"[score {rec['score']} — lower is better]")
     else:
         append_history(
             {"cal_file": str(cal_path), "cal_sha256": sha,

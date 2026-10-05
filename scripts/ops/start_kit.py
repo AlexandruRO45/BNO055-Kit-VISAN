@@ -126,8 +126,16 @@ def _print_ranking(ranked: list[dict]) -> None:
 
 
 def cmd_best(unit: str, config: str, bench_time: float) -> int:
-    """Rank on-Kit sessions, compare the winner with the factory fallback,
-    and promote to active.json only if the winner actually beats it."""
+    """Rank on-Kit sessions, then decide the active calibration by benching
+    the top session and the factory fallback LIVE, back-to-back, under
+    identical conditions — and promote the session only if it beats factory.
+
+    Both candidates are re-benched now (not compared against a stale stored
+    score) so the two scores are apples-to-apples: same settle, same thermal
+    state, same minute. A historical score is only used to pick *which*
+    session to challenge the factory with.
+    """
+    from bno055_kit.cli import BenchNotConverged, _run_bench  # shared bench
     from bno055_kit.config import Config
 
     cfg = Config.load(config if Path(config).is_file() else None)
@@ -147,13 +155,10 @@ def cmd_best(unit: str, config: str, bench_time: float) -> int:
               "scripts/ops/start_kit.py fallback")
         return 1
 
-    print(f"On-Kit sessions ranked by score (lower is better), "
-          f"{bench_time:.0f}s bench window:")
+    print(f"On-Kit sessions ranked by stored score (candidate selection), "
+          f"{bench_time:.0f}s bench window each:")
     _print_ranking(ranked)
 
-    # The factory fallback must be judged by the same yardstick: bench it
-    # live, under the same conditions, right now. A historical session only
-    # beats the legacy cal if it beats it *today*, on this drone.
     fallback = fallback_path(cfg.cal_file)
     if not fallback.is_file():
         print(f"[FAIL] factory fallback calibration missing: {fallback}")
@@ -161,42 +166,60 @@ def cmd_best(unit: str, config: str, bench_time: float) -> int:
               "scripts/deploy/install_kit.sh --confirm")
         return 1
 
-    from bno055_kit.cli import _run_bench  # shared bench, same scoring
-
-    if _systemd("stop", unit) != 0:
-        print(f"[FAIL] could not stop {unit} to bench the factory calibration")
-        return 1
-    factory_score: float | None = None
-    factory_failed = False
+    src = best["cal_file"]
     try:
+        winner_cal = load_calibration(src)
+        load_calibration(fallback)  # validate the baseline before touching it
+    except CalibrationError as exc:
+        print(f"[FAIL] {exc}")
+        print("       re-run the installer: sudo bash "
+              "scripts/deploy/install_kit.sh --confirm")
+        return 1
+
+    # Bench both live, back-to-back, sensor free. Any failure aborts the
+    # promotion: never overwrite active.json on an untrustworthy comparison.
+    if _systemd("stop", unit) != 0:
+        print(f"[FAIL] could not stop {unit} to bench — nothing promoted")
+        return 1
+    winner_score: float | None = None
+    factory_score: float | None = None
+    compare_ok = True
+    try:
+        print(f"[*] benching on-Kit winner {src} ({bench_time:.0f}s) ...")
+        winner_rec = _run_bench(src, cfg.bus, cfg.address, bench_time,
+                                record_source="best-session")
+        print(json.dumps(winner_rec, indent=2))
+        winner_score = winner_rec["score"]
+
         print(f"[*] benching factory fallback ({bench_time:.0f}s) ...")
-        factory_rec = _run_bench(str(fallback), cfg.bus, cfg.address,
-                                 bench_time, record_source="best-factory")
+        factory_rec = _run_bench(fallback, cfg.bus, cfg.address, bench_time,
+                                 record_source="best-factory")
         print(json.dumps(factory_rec, indent=2))
         factory_score = factory_rec["score"]
     except CalibrationError as exc:
-        print(f"[FAIL] factory fallback unreadable: {exc}")
-        print("       re-run the installer: sudo bash "
-              "scripts/deploy/install_kit.sh --confirm")
-        factory_failed = True
+        print(f"[FAIL] calibration unreadable during bench: {exc}")
+        compare_ok = False
+    except BenchNotConverged as exc:
+        print(f"[FAIL] bench invalid: {exc}")
+        print("       the comparison needs a trustworthy window — re-run "
+              "`best` with a longer --time (e.g. --time 60).")
+        compare_ok = False
     finally:
         restart_rc = _systemd("start", unit)
         if restart_rc != 0:
             print(f"[!] {unit} did not restart (systemctl start "
                   f"rc={restart_rc}) — start it manually.")
 
-    if factory_failed:
-        # Without a trustworthy baseline, promoting would violate the
-        # "never worse than known-good" rule. Stop and let the operator fix
-        # the fallback (re-install) first.
-        print("[FAIL] cannot compare against the factory calibration — "
+    if not compare_ok or winner_score is None or factory_score is None:
+        print("[FAIL] could not produce a fair live comparison — "
               "active.json left untouched.")
         return 1
 
-    _, promote = rank_and_compare(records, factory_score)
+    _, promote = rank_and_compare(
+        [{"cal_file": src, "score": winner_score}], factory_score)
     verdict = "BETTER" if promote else "NOT better"
-    print(f"\n[i]     winner {best['score']} vs factory {factory_score} "
-          f"-> {verdict}")
+    print(f"\n[i]     live winner {winner_score} vs live factory "
+          f"{factory_score} -> {verdict}")
 
     if not promote:
         print("[i]     active.json left untouched — the factory "
@@ -204,16 +227,10 @@ def cmd_best(unit: str, config: str, bench_time: float) -> int:
               "sudo python3 scripts/ops/start_kit.py fallback")
         return 0
 
-    src = best["cal_file"]
-    try:
-        cal = load_calibration(src)
-    except CalibrationError as exc:
-        print(f"[FAIL] winner unreadable: {exc}")
-        return 1
-    sha = save_calibration(cal, cfg.cal_file)
+    sha = save_calibration(winner_cal, cfg.cal_file)
     _systemd("stop", unit)
     _systemd("start", unit)
-    print(f"\n[OK]   active calibration <- {src} (score {best['score']}) "
+    print(f"\n[OK]   active calibration <- {src} (live score {winner_score}) "
           f"sha256={sha[:12]}...")
     print(f"[OK]   {unit} restarted with the promoted calibration.")
     return 0

@@ -94,6 +94,27 @@ def test_bench_metrics_drift():
     assert m["score"] > 1.0
 
 
+def test_bench_metrics_ignores_frozen_heading_warmup():
+    """Regression: right after apply_calibration the heading can sit frozen
+    for the first part of the window. The warm-up must be discarded for the
+    heading too — otherwise drift/noise collapse to ~0 and a bogus perfect
+    score poisons the `best` comparison (observed on-Kit: factory scored
+    0.1756 with drift=0.0 / noise=0.002)."""
+    heads = [42.0] * 100 + [42.0 + i * 0.1 for i in range(1, 101)]
+    accs = [(0.0, 0.0, 0.0)] * 200
+    m = bench_metrics(heads, accs, duration_s=30.0)
+    assert m["drift_deg_per_min"] > 1.0  # real drift, not the frozen 0.0
+    assert m["head_noise_deg"] > 0.01
+
+
+def test_bench_metrics_records_levels_after_warmup():
+    heads = [0.0] * 200
+    accs = [(0.0, 0.0, 0.0)] * 200
+    levels = [(0, 0, 0, 0)] * 50 + [(3, 3, 3, 3)] * 150
+    m = bench_metrics(heads, accs, duration_s=30.0, levels=levels)
+    assert m["cal_levels_at_bench"] == [3, 3, 3, 3]  # warm-up excluded
+
+
 def test_make_record_keys():
     rec = make_record("cal.json", "abc", {"score": 1.0},
                       when_utc="2026-10-02T00:00:00Z")
