@@ -171,3 +171,23 @@ def pick_best(records: list[dict]) -> dict | None:
     if not usable:
         return None
     return min(usable, key=lambda r: r["score"])
+
+
+def rank_and_compare(records: list[dict],
+                     factory_score: float | None) -> tuple[dict | None, bool]:
+    """Rank on-Kit sessions and compare the winner with the factory fallback.
+
+    Returns ``(winner, promote)``: the lowest-score record whose cal_file
+    still exists, and whether it should be promoted over the factory
+    calibration. Promotion requires a winner that *strictly* beats the
+    factory score — a tie keeps the frozen known-good cal. A ``None``
+    factory score (e.g. the fallback failed to bench) is treated as "no
+    baseline": the winner is promoted rather than losing to a missing
+    reference.
+    """
+    winner = pick_best(records)
+    if winner is None:
+        return None, False
+    if factory_score is None:
+        return winner, True
+    return winner, winner["score"] < factory_score

@@ -7,13 +7,19 @@ run on the Kit with the sensor already glued to the drone:
     PAS 2/3 (ACCEL) : six validated faces against the gravity vector
     PAS 3/3 (MAG)   : figure-8 in free air until mag status reaches 3
 
+Every prompt shows a *live preview line* while waiting for [Enter]: the
+pose/calibration status is sampled continuously, so the operator only
+presses Enter when it says READY — a wrong position is caught before the
+2.5 s hold is wasted, not after three failed attempts.
+
 The face validators are pure functions so the whole procedure is testable
-without hardware; the orchestration takes an injectable sensor, input and
-print so tests can script the operator.
+without hardware; the orchestration takes an injectable sensor, preview
+and print so tests can script the operator.
 """
 from __future__ import annotations
 
 import math
+import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -104,6 +110,72 @@ class CalibrationTimeout(Exception):
     """Raised when a convergence phase never reaches level 3."""
 
 
+def _levels_line(sensor, need: tuple[int, ...]) -> str:
+    """Live preview for a level-gated step: READY once the needed level hits 3."""
+    st = sensor.read().cal
+    line = f"sys={st[0]} gyro={st[1]} accel={st[2]} mag={st[3]}"
+    return ("READY: " if all(st[i] >= 3 for i in need) else "wait:  ") + line
+
+
+def _face_line(sensor, axis: int, ref_sign: int | None, *,
+               window_s: float, dt: float,
+               sleep: Callable[[float], None]) -> str:
+    """Live preview for a face: short sample window -> the same gates as the
+    real validation, so READY here means the attempt will pass."""
+    mean, std_max = sample_face(sensor, hold_s=window_s, dt=dt, sleep=sleep)
+    res = validate_face(mean, std_max, axis, ref_sign=ref_sign)
+    if res.ok:
+        return f"READY: pose correct ({'XYZ'[axis]}{res.sign:+d}) — [Enter]"
+    return f"adjust: {res.reason}"
+
+
+def _stdin_preview(*, out: Callable[..., None],
+                   color: bool) -> Callable[[str, Callable[[], str], float], None]:
+    """Default preview loop: print the header, then poll a live status line
+    every ``poll_s`` until [Enter] arrives on stdin (EOF -> abort)."""
+    import select
+
+    def _preview(header: str, status_fn: Callable[[], str], poll_s: float) -> None:
+        out(header)
+        while True:
+            ready, _, _ = select.select([sys.stdin], [], [], poll_s)
+            if ready:
+                ch = sys.stdin.read(1)
+                if ch == "":
+                    raise EOFError  # stdin closed -> same as Ctrl-C
+                if ch in ("\n", "\r"):
+                    out("")
+                    return
+            else:
+                line = status_fn()
+                if color:
+                    line = (f"\033[32m{line}\033[0m" if line.startswith("READY")
+                            else f"\033[33m{line}\033[0m")
+                out(f"\r    {line:<72}", end="", flush=True)
+
+    return _preview
+
+
+def _skip_advice(reasons: list[str]) -> str:
+    """Why did all attempts fail? Only blame the calibration when the pose
+    itself was right every time — a wrong position is not a sensor problem."""
+    kinds = set()
+    for r in reasons:
+        if "jitter" in r:
+            kinds.add("motion")
+        elif "dominant axis" in r or "OPPOSITE" in r:
+            kinds.add("pose")
+        else:
+            kinds.add("magnitude")
+    if kinds == {"pose"}:
+        return ("the pose never matched — reposition the board and run "
+                "again; the sensor itself is fine")
+    if "motion" in kinds:
+        return ("the board kept moving — hold it perfectly still and run "
+                "again")
+    return "gravity magnitude off in a correct pose — more calibration recommended"
+
+
 def _wait_level(sensor, idx: int, label: str, *,
                 out: Callable[..., None], sleep: Callable[[float], None],
                 monotonic: Callable[[], float], timeout_s: float,
@@ -123,23 +195,37 @@ def _wait_level(sensor, idx: int, label: str, *,
     out(f"\r    {label}: OK (3)                              ")
 
 
-def run_calibration(sensor: Bno055, *, prompt: Callable[[str], str] = input,
+def run_calibration(sensor: Bno055, *,
+                    preview: Callable[[str, Callable[[], str], float], None]
+                    | None = None,
                     out: Callable[..., None] = print,
                     sleep: Callable[[float], None] = time.sleep,
                     monotonic: Callable[[], float] = time.monotonic,
                     hold_s: float = 2.5, dt: float = 0.1,
                     timeout_s: float = 120.0,
-                    min_faces: int = 4) -> Calibration:
+                    min_faces: int = 4,
+                    preview_poll_s: float = 0.4,
+                    preview_window_s: float = 0.4,
+                    color: bool | None = None) -> Calibration:
     """Run the full interactive procedure; return the captured Calibration.
 
-    Raises CalibrationAborted on EOF/Ctrl-C and CalibrationTimeout when a
-    convergence phase stalls; returns normally even if some faces were
-    skipped, as long as ``min_faces`` validated (legacy behaviour).
+    Every prompt runs ``preview(header, status_fn, poll_s)``: a live status
+    line (pose gates / calibration levels) refreshes until the operator
+    presses [Enter] — the default implementation reads the sensor while it
+    waits. Raises CalibrationAborted on EOF/Ctrl-C and CalibrationTimeout
+    when a convergence phase stalls; returns normally even if some faces
+    were skipped, as long as ``min_faces`` validated (legacy behaviour).
     """
+    if preview is None:
+        if color is None:
+            color = sys.stdout.isatty()
+        preview = _stdin_preview(out=out, color=color)
+
     out("=== BNO055 CALIBRATION (on-Kit) ===")
     try:
-        prompt("\n>>> STEP 1/3 (GYRO): board flat on the ground, perfectly "
-               "STILL.\n    [Enter] when ready ...")
+        preview("\n>>> STEP 1/3 (GYRO): board flat on the ground, perfectly "
+                "STILL.\n    [Enter] when the live line says READY ...",
+                lambda: _levels_line(sensor, (1,)), preview_poll_s)
     except (EOFError, KeyboardInterrupt) as exc:
         raise CalibrationAborted("aborted at step 1/3") from exc
     _wait_level(sensor, 1, "gyro", out=out, sleep=sleep, monotonic=monotonic,
@@ -150,11 +236,17 @@ def run_calibration(sensor: Bno055, *, prompt: Callable[[str], str] = input,
     axis_sign: dict[int, int] = {}
     ok_faces = 0
     for name, how, axis in FACES:
+        reasons: list[str] = []
         for attempt in range(1, FACE_ATTEMPTS + 1):
+            ref_sign = axis_sign.get(axis)  # bind per-face for the preview
             try:
-                prompt(f"\n>>> FACE {name}: {how}\n"
-                       f"    Hold perfectly still for {hold_s:.1f}s. "
-                       f"[Enter] then DO NOT move ...")
+                preview(f"\n>>> FACE {name}: {how}\n"
+                        f"    Hold perfectly still for {hold_s:.1f}s. "
+                        f"[Enter] when READY, then DO NOT move ...",
+                        lambda a=axis, rs=ref_sign: _face_line(
+                            sensor, a, rs, window_s=preview_window_s,
+                            dt=dt, sleep=sleep),
+                        preview_poll_s)
             except (EOFError, KeyboardInterrupt) as exc:
                 raise CalibrationAborted(f"aborted at face {name}") from exc
             mean, std_max = sample_face(sensor, hold_s=hold_s, dt=dt,
@@ -169,10 +261,11 @@ def run_calibration(sensor: Bno055, *, prompt: Callable[[str], str] = input,
                 ok_faces += 1
                 axis_sign.setdefault(axis, res.sign)
                 break
+            reasons.append(res.reason)
             out(f"    [X] {res.reason}  attempt {attempt}/{FACE_ATTEMPTS}.")
         else:
             out(f"    [!] face {name} SKIPPED after {FACE_ATTEMPTS} attempts"
-                f" — more calibration recommended.")
+                f" — {_skip_advice(reasons)}.")
 
     out(f"\n    faces validated: {ok_faces}/6")
     if ok_faces < min_faces:
@@ -182,8 +275,10 @@ def run_calibration(sensor: Bno055, *, prompt: Callable[[str], str] = input,
     _wait_level(sensor, 2, "accel", out=out, sleep=sleep, monotonic=monotonic,
                 timeout_s=timeout_s)
     try:
-        prompt("\n>>> STEP 3/3 (MAG): hold it in the air, away from metal and"
-               " motors, slow figure-8.\n    [Enter] when ready ...")
+        preview("\n>>> STEP 3/3 (MAG): hold it in the air, away from metal and"
+                " motors, slow figure-8.\n    [Enter] when the live line says "
+                "READY ...",
+                lambda: _levels_line(sensor, (3,)), preview_poll_s)
     except (EOFError, KeyboardInterrupt) as exc:
         raise CalibrationAborted("aborted at step 3/3") from exc
     _wait_level(sensor, 3, "mag", out=out, sleep=sleep, monotonic=monotonic,
@@ -192,8 +287,9 @@ def run_calibration(sensor: Bno055, *, prompt: Callable[[str], str] = input,
                 timeout_s=timeout_s)
 
     try:
-        prompt("\n>>> All levels at 3! Keep the board still, [Enter] to "
-               "capture ...")
+        preview("\n>>> All levels at 3! Keep the board still, [Enter] to "
+                "capture ...",
+                lambda: _levels_line(sensor, (0, 1, 2, 3)), preview_poll_s)
     except (EOFError, KeyboardInterrupt) as exc:
         raise CalibrationAborted("aborted at capture") from exc
     cal = sensor.capture_calibration(source="on-kit calibrate")

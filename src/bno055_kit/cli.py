@@ -74,7 +74,13 @@ def cmd_run(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------- bench
 def _run_bench(cal_file: str | Path, bus: int, address: int, duration_s: float,
                *, record_source: str = "bench") -> dict:
-    """Bench one calibration file at rest; return the history record."""
+    """Bench one calibration file at rest; return the history record.
+
+    The record's ``cal_file`` is the *path that was benched* — never the
+    calibration's internal ``source`` label — so ``best`` can re-read and
+    promote exactly the file that was scored.
+    """
+    cal_file = Path(cal_file)
     cal = load_calibration(cal_file)
     sensor = Bno055(bus=bus, address=address)
     sensor.connect()
@@ -82,7 +88,7 @@ def _run_bench(cal_file: str | Path, bus: int, address: int, duration_s: float,
 
     print(f"[*] bench {duration_s:.0f}s — keep the board perfectly still ...")
     heads, accs = sample_bench_window(sensor, duration_s)
-    rec = make_record(str(cal.source), cal.sha256,
+    rec = make_record(str(cal_file), cal.sha256,
                       bench_metrics(heads, accs, duration_s))
     rec["source"] = record_source
     return rec
@@ -156,16 +162,15 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     now_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     cal = replace(cal, calibrated_at_utc=now_utc)
 
+    # The session is only *saved* here — active.json is never touched.
+    # Promotion is `best`'s job exclusively: it ranks every scored session
+    # against the factory fallback and overwrites active.json only when the
+    # winner actually beats the known-good calibration.
     cal_dir = Path(cfg.cal_file).parent
     ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
     cal_path = cal_dir / f"cal_{ts}.json"
     sha = save_calibration(cal, cal_path)
     print(f"[OK]   saved {cal_path} sha256={sha[:12]}...")
-
-    if not args.no_activate:
-        sha = save_calibration(cal, cfg.cal_file)
-        print(f"[OK]   active calibration updated: {cfg.cal_file} "
-              f"sha256={sha[:12]}...")
 
     try:
         answer = input("    [Enter]=bench 30s (board still) / s=skip >> ")
@@ -183,6 +188,8 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
              "when_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
              "source": "calibrate", "score": None},
             cal_dir / "history.jsonl")
+    print("[i]     active.json untouched — promote with: "
+          "python3 scripts/ops/start_kit.py best")
     return 0
 
 
@@ -283,9 +290,9 @@ def _build_parser() -> argparse.ArgumentParser:
     pc = sub.add_parser("calibrate",
                         help="interactive on-Kit calibration (stop the unit first)")
     pc.add_argument("--cal-file", default=None,
-                    help="active calibration file to update (default from config)")
-    pc.add_argument("--no-activate", action="store_true",
-                    help="save cal_<ts>.json only, do not update the active file")
+                    help="active calibration file (session files are saved "
+                         "next to it; the active file itself is never "
+                         "written — default from config)")
     pc.add_argument("--unit", default="bno055-imu.service",
                     help="unit that must NOT be running (default %(default)s)")
     pc.add_argument("--force", action="store_true",

@@ -146,6 +146,59 @@ def test_pick_best_empty():
     assert pick_best([{"cal_file": "nope.json", "score": 1.0}]) is None
 
 
+# ------------------------------------------------------- rank_and_compare
+def test_rank_and_compare_winner_beats_factory(tmp_path):
+    """Only a winner strictly better than factory is promoted."""
+    from bno055_kit.calibration import rank_and_compare
+
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text("{}")
+    b.write_text("{}")
+    recs = [{"cal_file": str(a), "score": 41.0}, {"cal_file": str(b), "score": 12.5}]
+    winner, promote = rank_and_compare(recs, factory_score=20.0)
+    assert winner["cal_file"] == str(b)
+    assert promote is True
+
+
+def test_rank_and_compare_factory_still_best(tmp_path):
+    from bno055_kit.calibration import rank_and_compare
+
+    a = tmp_path / "a.json"
+    a.write_text("{}")
+    recs = [{"cal_file": str(a), "score": 99.3858}]
+    winner, promote = rank_and_compare(recs, factory_score=20.0)
+    assert winner["cal_file"] == str(a)
+    assert promote is False  # worse than factory -> active.json untouched
+
+
+def test_rank_and_compare_tie_keeps_factory(tmp_path):
+    from bno055_kit.calibration import rank_and_compare
+
+    a = tmp_path / "a.json"
+    a.write_text("{}")
+    recs = [{"cal_file": str(a), "score": 20.0}]
+    _, promote = rank_and_compare(recs, factory_score=20.0)
+    assert promote is False
+
+
+def test_rank_and_compare_no_baseline_promotes(tmp_path):
+    """No usable factory score (failed bench) -> winner wins by default."""
+    from bno055_kit.calibration import rank_and_compare
+
+    a = tmp_path / "a.json"
+    a.write_text("{}")
+    recs = [{"cal_file": str(a), "score": 99.0}]
+    winner, promote = rank_and_compare(recs, factory_score=None)
+    assert winner["cal_file"] == str(a)
+    assert promote is True
+
+
+def test_rank_and_compare_no_session():
+    from bno055_kit.calibration import rank_and_compare
+
+    assert rank_and_compare([], factory_score=20.0) == (None, False)
+
+
 # ---------------------------------------------------------------- fallback
 def test_fallback_path_sits_next_to_active():
     from bno055_kit.calibration import FALLBACK_NAME, fallback_path

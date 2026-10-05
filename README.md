@@ -94,11 +94,12 @@ start it; the boot path is the tested path.
 ## Calibrate
 
 **Two files, two roles.** `active.json` is the mutable working copy the
-daemon loads — `calibrate`, `best` and `fallback` overwrite it freely.
+daemon loads — only `best` and `fallback` ever overwrite it.
 `factory_fallback.json` is the frozen known-good calibration: root-owned,
 mode `0444`, re-installed on **every** install, and never written or
 deleted by any tool — so it survives any number of bad on-Kit sessions and
-is always available as the retreat path.
+is always available as the retreat path (and as the baseline `best` must
+beat).
 
 **Default flow (unchanged):** at first install `active.json` is seeded from
 the shipped seed (only if absent — an on-Kit result is never overwritten)
@@ -112,8 +113,9 @@ procedure, interactive, English prompts:
 sudo python3 scripts/ops/start_kit.py calibrate   # stops the unit, guides
                                                   # the procedure, ALWAYS
                                                   # restarts recording
-sudo python3 scripts/ops/start_kit.py best        # optional: rank history
-                                                  # + promote the winner
+sudo python3 scripts/ops/start_kit.py best        # rank history, bench
+                                                  # factory, promote the
+                                                  # winner if it beats it
 sudo python3 scripts/ops/start_kit.py fallback    # none of the sessions
                                                   # good enough? restore
                                                   # the factory cal
@@ -126,12 +128,27 @@ PATH to the system python, which lacks the kit's deps).
 Procedure per session: gyro at rest → six accel faces validated against
 gravity (magnitude, dominant axis, jitter, opposite-sign pair) → accel/mag/
 sys convergence (figure-8 for the magnetometer) → offsets captured to
-`/var/lib/bno055/cal_<UTC ts>.json`, appended to the Kit-local
-`/var/lib/bno055/history.jsonl`, and promoted to `active.json` (unless
-`--no-activate`). An optional 30 s bench
-scores the fresh calibration; run several sessions and `best` promotes the
-lowest score. Ctrl-C at any point aborts without saving — and the recorder
-unit is restarted either way.
+`/var/lib/bno055/cal_<UTC ts>.json` and appended to the Kit-local
+`/var/lib/bno055/history.jsonl`. An optional 30 s bench scores the fresh
+calibration. **`calibrate` never touches `active.json`** — a fresh session
+only becomes active through `best`. Ctrl-C at any point aborts without
+saving — and the recorder unit is restarted either way.
+
+Every prompt shows a **live preview line** while it waits for [Enter]: the
+sensor is sampled continuously, so the line reads green `READY: ...` only
+when the current pose/levels would actually pass that step's gates
+(yellow `adjust: <why>` / `wait: <levels>` otherwise) — a wrong position is
+caught *before* wasting the 2.5 s hold, not after three failed attempts.
+A face skipped after 3 attempts also says *why*: a wrong pose blames the
+position ("reposition and run again — the sensor itself is fine"), never
+the calibration; only a correct pose with bad magnitude blames the sensor.
+
+`best` is the only promoter: it ranks every scored session in
+`history.jsonl`, then benches the **factory fallback live** under the same
+conditions (same sensor, same bench, same day — `--time` sets the window,
+30 s default). The winner is promoted to `active.json` **only if its score
+strictly beats the factory score**; otherwise the factory cal stays active
+and nothing is written. A tie keeps the frozen known-good cal.
 
 The bench tooling in the parent directory (`imu.py calibrate` → `best`)
 produces the identical 5-key schema and remains available on the bench;
