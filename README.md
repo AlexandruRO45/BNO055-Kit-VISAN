@@ -146,20 +146,29 @@ the calibration; only a correct pose with bad magnitude blames the sensor.
 `best` is the only promoter. It first ranks the scored sessions in
 `history.jsonl` to pick a *candidate*, then decides by **benching the top
 session and the factory fallback live, back-to-back, under identical
-conditions** (same settle, same minute — `--time` sets the window, 30 s
+conditions** (same minute, same motion — `--time` sets the window, 30 s
 default). The session is promoted to `active.json` **only if its live score
 strictly beats the factory's live score**; otherwise the factory cal stays
 active and nothing is written (a tie keeps the frozen known-good cal). Both
 candidates are re-benched every run — a stored score only picks the
 candidate, it never wins the comparison — so the two numbers are always
-apples-to-apples. If either bench window is untrustworthy (the fusion has
-not re-converged to 3/3/3/3 after the offsets are written), `best` refuses
-to promote rather than score a frozen heading as a fake-perfect ~0.
+apples-to-apples.
+
+Each bench **re-converges first**: applying a calibration round-trips the
+chip through CONFIG_MODE, which resets the live fusion, and the
+magnetometer only re-converges while the field *changes* — so the operator
+figures-8 until `mag=3`, then holds **perfectly still** for the window. A
+window is rejected (not scored) unless `accel=3` and the heading is *live*
+(many distinct samples, not frozen at one value): a frozen heading scores a
+fake-perfect ~0 and would poison the comparison. `mag` is deliberately not
+required during the still window — it decays to 0 the instant the board
+stops moving, so demanding `mag=3` while still is impossible.
 
 `bench` scores any calibration file at rest (`bias + |drift| + noise`,
 lower is better) and appends to the same `history.jsonl`; it is the shared
 scoring that `calibrate` and `best` both run through, so every score in the
-history is directly comparable.
+history is directly comparable. Exposed on the Kit as
+`sudo python3 scripts/ops/start_kit.py bench [--cal-file F] [--time N]`.
 
 ## Time-sync a session against a candump capture
 

@@ -8,19 +8,27 @@ Usage:
     start_kit.py calibrate [--unit ...] [extra cli calibrate args...]
     start_kit.py best [--unit ...] [--time 30]
     start_kit.py fallback [--unit ...]
+    start_kit.py bench [--unit ...] [extra cli bench args...]
 
 ``calibrate`` is the on-Kit operator toggle: it stops the recorder, runs the
 interactive calibration (sensor already glued to the drone), and ALWAYS
 restarts the unit afterwards — including on Ctrl-C or failure — so the
 drone never sits unrecorded. It only *saves* the session (cal_<ts>.json +
 history.jsonl); it never touches the active calibration.
-``best`` is the only promoter: it ranks every scored session in
-history.jsonl, benches the factory fallback under the same conditions, and
-overwrites the active calibration with the on-Kit winner ONLY if it beats
-the factory score — otherwise the factory cal stays active.
+``best`` is the only promoter: it ranks the scored sessions in
+history.jsonl to pick a candidate, then benches that session AND the factory
+fallback live, back-to-back, under identical conditions, and overwrites the
+active calibration with the session ONLY if its live score beats the
+factory's — otherwise the factory cal stays active.
 ``fallback`` restores the factory calibration (the known-good calib shipped
 with the Kit, never deleted) as the active calibration and restarts the
 unit — the escape hatch when no on-Kit session is good enough.
+``bench`` scores one calibration (default: the active one) at rest and
+appends it to history.jsonl, without changing the active calibration.
+
+Every bench re-converges first: figure-8 the board until mag=3, then hold
+it PERFECTLY still for the window (mag decays to 0 while still, so only
+accel=3 and a live, non-frozen heading are required during the window).
 
 Exit codes: 0 ok, 1 command failed, 2 bad arguments.
 """
@@ -70,8 +78,8 @@ DEFAULT_CONFIG = "/etc/bno055/bno055_imu.yaml"
 # Actions that stop/start the recorder unit: without root, polkit refuses
 # the systemctl call mid-run ("Access denied"), which would leave `best`
 # half-done (history ranked, factory never benched). Fail fast instead.
-_PRIVILEGED_ACTIONS = {"calibrate", "best", "fallback", "start", "stop",
-                       "restart"}
+_PRIVILEGED_ACTIONS = {"calibrate", "best", "fallback", "bench", "start",
+                       "stop", "restart"}
 
 
 def _systemd(*args: str) -> int:
@@ -201,8 +209,8 @@ def cmd_best(unit: str, config: str, bench_time: float) -> int:
         compare_ok = False
     except BenchNotConverged as exc:
         print(f"[FAIL] bench invalid: {exc}")
-        print("       the comparison needs a trustworthy window — re-run "
-              "`best` with a longer --time (e.g. --time 60).")
+        print("       the comparison needs a converged window — figure-8 the "
+              "board until mag=3, then hold it PERFECTLY still.")
         compare_ok = False
     finally:
         restart_rc = _systemd("start", unit)
@@ -256,15 +264,39 @@ def cmd_fallback(unit: str, config: str) -> int:
     print(f"[OK]   active calibration <- factory fallback {fallback} "
           f"sha256={sha[:12]}...")
     _systemd("stop", unit)
-    _systemd("start", unit)
+    restart_rc = _systemd("start", unit)
+    if restart_rc != 0:
+        print(f"[FAIL] {unit} did NOT start (systemctl start rc={restart_rc}) "
+              "— inspect: systemctl status " + unit)
+        return 1
     print(f"[OK]   {unit} restarted with the factory calibration.")
     return 0
+
+
+def cmd_bench(unit: str, config: str, extra: list[str]) -> int:
+    """Stop the recorder, bench a calibration (default: active), restart.
+
+    The unit is stopped here, so the kit CLI needs no --force/--unit — the
+    sensor is already free. ``extra`` carries the bench flags (--cal-file,
+    --time, --no-history ...).
+    """
+    _systemd("stop", unit)
+    rc = 1
+    try:
+        rc = _kit_cli(["--config", config, "bench", *extra])
+    finally:
+        restart_rc = _systemd("start", unit)
+        if restart_rc != 0:
+            print(f"[!] {unit} did not restart (systemctl start "
+                  f"rc={restart_rc}) — start it manually.")
+    return rc
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="start_kit", description=__doc__.splitlines()[0])
     p.add_argument("action",
-                   choices=sorted([*ACTIONS, "calibrate", "best", "fallback"]))
+                   choices=sorted([*ACTIONS, "calibrate", "best", "fallback",
+                                   "bench"]))
     p.add_argument("--unit", default=DEFAULT_UNIT)
     p.add_argument("--config", default=DEFAULT_CONFIG)
     p.add_argument("--time", type=float, default=30.0, dest="bench_time",
@@ -285,7 +317,11 @@ def main(argv: list[str] | None = None) -> int:
             p.error(f"unrecognized arguments: {' '.join(extra)}")
         return cmd_best(args.unit, args.config, args.bench_time)
     if args.action == "fallback":
+        if extra:
+            p.error(f"unrecognized arguments: {' '.join(extra)}")
         return cmd_fallback(args.unit, args.config)
+    if args.action == "bench":
+        return cmd_bench(args.unit, args.config, extra)
 
     if extra:
         p.error(f"unrecognized arguments: {' '.join(extra)}")

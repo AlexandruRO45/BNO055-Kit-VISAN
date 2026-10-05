@@ -16,6 +16,7 @@ import logging
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from .bench import bench_metrics, make_record, sample_bench_window
@@ -76,43 +77,76 @@ class BenchNotConverged(RuntimeError):
     """Raised when a bench window was sampled before the fusion converged."""
 
 
+# A live (even if still) BNO055 heading steps through its 1/16 deg
+# quantisation, so a real 30 s window has many distinct values; a frozen
+# sensor returns one value (the fake-~0 pathology). Anything at/below this
+# many distinct samples is treated as frozen and rejected.
+_MIN_HEAD_DISTINCT = 5
+
+
 def _run_bench(cal_file: str | Path, bus: int, address: int, duration_s: float,
                *, record_source: str = "bench",
-               settle_s: float = 5.0) -> dict:
+               converge_timeout_s: float = 120.0,
+               prompt: Callable[[str], str] = input) -> dict:
     """Bench one calibration file at rest; return the history record.
 
     The record's ``cal_file`` is the *path that was benched* — never the
     calibration's internal ``source`` label — so ``best`` can re-read and
     promote exactly the file that was scored.
 
-    The sensor is given ``settle_s`` to re-converge after the offsets are
-    written, and the window is rejected (rather than scored) if the levels
-    never reach 3: a freshly-applied calibration reports a *frozen* heading,
-    which would score near 0 and poison the ``best`` comparison.
+    The fusion is re-converged first: ``apply_calibration`` round-trips
+    through CONFIG_MODE, which resets the live calibration, and the
+    magnetometer only re-converges while the field *changes* — so the
+    operator figures-8 until mag=3, then holds perfectly still while the
+    window is sampled. The window is rejected (not scored) unless accel=3
+    and the heading is *live* (not frozen): a frozen heading — the sensor
+    returning one value for the whole window — scores a fake ~0 and would
+    poison the ``best`` comparison. ``mag`` is not required during the still
+    window because it decays to 0 the moment the board stops moving.
     """
+    from .calibrate import CalibrationTimeout, _wait_level
+
     cal_file = Path(cal_file)
     cal = load_calibration(cal_file)
     sensor = Bno055(bus=bus, address=address)
     sensor.connect()
     sensor.apply_calibration(cal)
 
-    if settle_s > 0:
-        print(f"[*] settling {settle_s:.0f}s before benching ...")
-        deadline = time.monotonic() + settle_s
-        while time.monotonic() < deadline:
-            time.sleep(0.25)
+    try:
+        prompt("\n>>> BENCH: figure-8 the board until mag=3, then hold it "
+               "PERFECTLY still. [Enter] when ready ...")
+    except (EOFError, KeyboardInterrupt) as exc:
+        raise BenchNotConverged("bench aborted before sampling") from exc
+    try:
+        _wait_level(sensor, 3, "mag", out=print, sleep=time.sleep,
+                    monotonic=time.monotonic, timeout_s=converge_timeout_s)
+        print("    now hold PERFECTLY still ...")
+        _wait_level(sensor, 0, "sys", out=print, sleep=time.sleep,
+                    monotonic=time.monotonic, timeout_s=converge_timeout_s)
+    except CalibrationTimeout as exc:
+        raise BenchNotConverged(
+            f"could not converge before benching ({exc}) — figure-8 the "
+            f"board until mag=3 and retry.") from exc
 
     print(f"[*] bench {duration_s:.0f}s — keep the board perfectly still ...")
     heads, accs, levels = sample_bench_window(sensor, duration_s)
     rec = make_record(str(cal_file), cal.sha256,
                       bench_metrics(heads, accs, duration_s, levels=levels))
     rec["source"] = record_source
+    # Trustworthy window = accel converged (bias is measured from it, and it
+    # holds at 3 while still) AND the heading actually moved (not frozen).
+    # mag is deliberately NOT required: it decays to 0 the instant the board
+    # stops moving, so demanding mag=3 over a still window is impossible.
     settled = rec.get("cal_levels_at_bench")
-    if settled is not None and min(settled) < 3:
+    accel_ok = settled is not None and settled[2] >= 3
+    heading_live = rec["head_distinct"] >= _MIN_HEAD_DISTINCT
+    if not (accel_ok and heading_live):
         raise BenchNotConverged(
-            f"bench window invalid: calibration levels {tuple(settled)} "
-            f"(need 3/3/3/3) — the fusion had not re-converged, so the "
-            f"heading was not trustworthy. Re-run with a longer --time.")
+            f"bench window invalid: accel level "
+            f"{settled[2] if settled is not None else '?'}/3, "
+            f"{rec['head_distinct']} distinct heading values "
+            f"(need accel=3 and a live, non-frozen heading) — figure-8 until "
+            f"mag=3, then hold the board perfectly still and re-run.")
     return rec
 
 

@@ -115,6 +115,19 @@ def test_bench_metrics_records_levels_after_warmup():
     assert m["cal_levels_at_bench"] == [3, 3, 3, 3]  # warm-up excluded
 
 
+def test_bench_metrics_flags_frozen_heading():
+    """A frozen heading (one value all window — the fake-~0 pathology) has
+    almost no distinct samples; a live-but-still board steps through the
+    1/16 deg quantisation and has many. This is the real gate signal, since
+    mag decays to 0 whenever the board is still."""
+    frozen = bench_metrics([42.0] * 200, [(0.0, 0.0, 0.0)] * 200,
+                           duration_s=30.0)
+    assert frozen["head_distinct"] <= 1
+    live = bench_metrics([42.0 + (i % 16) * 0.0625 for i in range(200)],
+                         [(0.0, 0.0, 0.0)] * 200, duration_s=30.0)
+    assert live["head_distinct"] > 5
+
+
 def test_make_record_keys():
     rec = make_record("cal.json", "abc", {"score": 1.0},
                       when_utc="2026-10-02T00:00:00Z")

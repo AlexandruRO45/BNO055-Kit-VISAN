@@ -41,10 +41,16 @@ def bench_metrics(heads: Sequence[float], accs: Sequence[Sequence[float]],
     accs_arr = np.asarray(accs[warm:], dtype=float)
     bias = float(np.linalg.norm(accs_arr, axis=1).mean())
     head_noise = float(np.degrees(np.std(np.radians(settled))))
+    # A *frozen* heading (the sensor returning one value for the whole
+    # window — the real pathology behind a fake ~0 score) shows up as almost
+    # no distinct samples. A live-but-still board still steps through the
+    # 1/16 deg heading quantisation, so it has many distinct values.
+    head_distinct = int(len(np.unique(np.round(settled, 4))))
     out = {
         "bias_linacc_m_s2": round(bias, 4),
         "drift_deg_per_min": round(drift_per_min, 3),
         "head_noise_deg": round(head_noise, 4),
+        "head_distinct": head_distinct,
         "score": round(bias + abs(drift_per_min) + head_noise, 4),
     }
     if levels is not None and len(levels) > warm:
