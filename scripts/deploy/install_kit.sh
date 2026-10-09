@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # install_kit.sh — install the BNO055 kit on the Kit (Jetson Orin, JetPack 6).
 #
-# Installs to /opt/bno055 with its OWN venv (the VISAN venv deliberately
-# carries no I2C/sensor deps), seeds the shipped calibration into
+# Installs to /opt/bno055 with its OWN venv, seeds the shipped calibration into
 # /var/lib/bno055, installs the systemd unit, and ENABLES it at boot.
-# Like the VISAN deb postinst, it deliberately does NOT start the service
+# Like the deb postinst, it deliberately does NOT start the service
 # during install — the boot-time start is the tested path.
 #
 # Usage:
@@ -41,9 +40,11 @@ SERVICE="bno055-imu.service"
 UNIT_SRC="${SRC_DIR}/scripts/deploy/systemd/${SERVICE}"
 WRAPPER_SRC="${SRC_DIR}/scripts/deploy/systemd/bno055_imu_wrapper.sh"
 CAL_SRC="${SRC_DIR}/calibs/active.json"
+FALLBACK_SRC="${SRC_DIR}/calibs/factory_fallback.json"
+FALLBACK_DST="/var/lib/bno055/factory_fallback.json"
 CONFIG_SRC="${SRC_DIR}/configs/bno055_imu.yaml"
 
-# Apply runs tee the whole session to a UTC-stamped log (VISAN ops-script
+# Apply runs tee the whole session to a UTC-stamped log (ops-script
 # convention); dry-runs stay silent so they make no filesystem changes.i
 LOG_FILE=""
 
@@ -78,6 +79,7 @@ stage "preflight"
 [ -f "$UNIT_SRC" ]     || fail preflight "missing unit: $UNIT_SRC"
 [ -f "$WRAPPER_SRC" ]   || fail preflight "missing wrapper: $WRAPPER_SRC"
 [ -f "$CAL_SRC" ]       || fail preflight "missing calibration: $CAL_SRC"
+[ -f "$FALLBACK_SRC" ]  || fail preflight "missing factory fallback calibration: $FALLBACK_SRC"
 [ -f "$CONFIG_SRC" ]    || fail preflight "missing config: $CONFIG_SRC"
 PYTHON_BIN="$(command -v python3)" || fail preflight "python3 not found"
 PYVER="$("$PYTHON_BIN" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
@@ -129,13 +131,22 @@ pass "venv"
 # ------------------------------------------------------------- state + config
 stage "state + config"
 run install -d -o visan -g visan /var/lib/bno055 /var/log/bno055 /run/bno055
-# Seed the shipped calibration ONLY if no active cal exists yet — never
-# overwrite a newer bench result on the Kit.
+# The factory fallback is the permanent known-good calibration shipped
+# with the Kit. It is (re)installed on EVERY install, owned root:root mode
+# 0444 — read-only for the `visan` user the daemon and the calibration
+# flow run as, so nothing but a root re-install can ever change or delete
+# it. It is what `start_kit.py fallback` restores active.json from when no
+# on-Kit session is good enough.
+run install -o root -g root -m 0444 "$FALLBACK_SRC" "$FALLBACK_DST"
+pass "factory fallback calibration installed (frozen): $FALLBACK_DST"
+# The ACTIVE calibration is the mutable working copy the daemon loads and
+# the on-Kit calibration flow overwrites. Seeded ONLY if absent — never
+# overwrite a newer on-Kit/bench result.
 if [ -f /var/lib/bno055/active.json ]; then
     pass "keeping existing /var/lib/bno055/active.json (not overwriting)"
 else
     run install -o visan -g visan -m 0644 "$CAL_SRC" /var/lib/bno055/active.json
-    pass "calibration seeded from $CAL_SRC"
+    pass "active calibration seeded from $CAL_SRC"
 fi
 # Config: seed only when absent — an operator's tuned config survives a
 # re-install (same keep-existing rule as the calibration above).
