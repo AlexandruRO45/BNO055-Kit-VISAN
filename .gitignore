@@ -8,6 +8,7 @@ build/
 dist/
 logs/
 *.log
+src/bno055_kit/analysis/dbc/*
 
 # Calibration sessions are per-instance artifacts generated on the Kit (or on
 # the bench) next to the active calibration — only the shipped seed and the

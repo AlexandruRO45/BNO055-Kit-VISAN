@@ -1,10 +1,10 @@
-# BNO055 Kit — boot-time IMU recorder for the VISAN Kit
+# BNO055 Kit — boot-time IMU recorder
 
-A standardised, headless companion to the VISAN flight stack: a BNO055
+A standardised, headless companion to a flight stack: a BNO055
 I2C IMU daemon that starts **independently at boot** as its own systemd
 unit, records every sample with a paired **CLOCK_REALTIME / CLOCK_MONOTONIC
 nanosecond stamp**, and ships with an offline analysis script that aligns
-its timeline against a VISAN `candump -L` capture — compensating for
+its timeline against `candump -L` capture — compensating for
 pipeline jitter — so the two logs can be correlated post-flight.
 
 The calibration schema is the original 5-key BNO055 raw-unit format (the
@@ -15,15 +15,15 @@ as `calibrate`/`bench`/`best`). The known-good calibration ships twice — as
 fresh Kit boots recording with the known-good cal and can always retreat to
 it.
 
-## Design doctrine (inherited from VISAN)
+## Design doctrine
 
 - **Better no data than wrong data**: the daemon refuses to record if the
   calibration is missing or invalid (exit `EX_CONFIG=78`, unit stays failed).
 - **Monotonic ns for math, wall clock for archival**: every sample carries
   both stamps; a `clock_ok` flag latches false if CLOCK_REALTIME steps
-  (NTP) mid-session, mirroring the VISAN sub-source envelope contract.
+  (NTP) mid-session.
 - **Anchor pairs**: each session's `session.json` records a tight
-  (wall, mono) anchor pair at start — the same reasoning as the VISAN
+  (wall, mono) anchor pair at start — the same reasoning as a 
   flight recorder's `sync.json` — so the IMU's monotonic timeline can be
   projected onto the candump wall-clock timeline.
 
@@ -62,7 +62,7 @@ kit/
 
 | Path | Purpose |
 |---|---|
-| `/opt/bno055` | app root, own venv at `/opt/bno055/.venv` (VISAN venv carries no I2C deps) |
+| `/opt/bno055` | app root, own venv at `/opt/bno055/.venv` |
 | `/var/lib/bno055/active.json` | **active** calibration — mutable working copy the daemon loads; `calibrate`/`best`/`fallback` overwrite it at will (`StateDirectory`) |
 | `/var/lib/bno055/factory_fallback.json` | **factory fallback** — frozen known-good cal, root-owned mode `0444`, re-installed on every install, never written or deleted by any tool |
 | `/var/log/bno055/<session>/` | `imu.jsonl` samples + `session.json` manifest (`LogsDirectory`) |
@@ -88,7 +88,7 @@ sudo bash scripts/deploy/install_kit.sh --confirm  # apply
 sudo systemctl start bno055-imu.service            # or just reboot
 ```
 
-Like the VISAN deb, install **enables** the unit for boot but does not
+Install **enables** the unit for boot but does not
 start it; the boot path is the tested path.
 
 ## Calibrate

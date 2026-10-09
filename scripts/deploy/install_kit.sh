@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # install_kit.sh — install the BNO055 kit on the Kit (Jetson Orin, JetPack 6).
 #
-# Installs to /opt/bno055 with its OWN venv (the VISAN venv deliberately
-# carries no I2C/sensor deps), seeds the shipped calibration into
+# Installs to /opt/bno055 with its OWN venv, seeds the shipped calibration into
 # /var/lib/bno055, installs the systemd unit, and ENABLES it at boot.
-# Like the VISAN deb postinst, it deliberately does NOT start the service
+# Like the deb postinst, it deliberately does NOT start the service
 # during install — the boot-time start is the tested path.
 #
 # Usage:
@@ -45,7 +44,7 @@ FALLBACK_SRC="${SRC_DIR}/calibs/factory_fallback.json"
 FALLBACK_DST="/var/lib/bno055/factory_fallback.json"
 CONFIG_SRC="${SRC_DIR}/configs/bno055_imu.yaml"
 
-# Apply runs tee the whole session to a UTC-stamped log (VISAN ops-script
+# Apply runs tee the whole session to a UTC-stamped log (ops-script
 # convention); dry-runs stay silent so they make no filesystem changes.i
 LOG_FILE=""
 
