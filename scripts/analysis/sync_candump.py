@@ -8,7 +8,7 @@ Usage:
 
 Writes a sync manifest (default: <session_dir>/sync.json) describing the
 constant clock offset between the IMU session timeline and the candump
-wall-clock timeline, plus the residual jitter — the companion anchor to the 
+wall-clock timeline, plus the residual jitter — the companion anchor to the
 flight recorder's sync.json for offline correlation.
 
 Exit codes: 0 ok, 1 analysis failed, 2 bad arguments.

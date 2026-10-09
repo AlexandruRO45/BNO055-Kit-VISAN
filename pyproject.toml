@@ -31,6 +31,9 @@ bno055-kit = "bno055_kit.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+bno055_kit = ["analysis/dbc/*.dbc"]
+
 [tool.ruff]
 target-version = "py310"
 line-length = 99
